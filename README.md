@@ -51,7 +51,7 @@ odin ask    --root . --profile default "summarize this: <paste>"
 ```
 
 `init` creates `profiles/<name>/` with a `config.toml`, `SOUL.md` (the system
-prompt), and a SQLite tracker. Edit `SOUL.md` and `config.toml`, then run.
+prompt), and a SQLite db. Edit `SOUL.md` and `config.toml`, then run.
 
 ## Commands
 
@@ -73,7 +73,7 @@ prompt), and a SQLite tracker. Edit `SOUL.md` and `config.toml`, then run.
 by the environment variable that holds them.
 
 ```toml
-toolsets = ["tracker", "file"]   # allowlist; absent tools cannot be called
+toolsets = ["db", "file"]   # allowlist; absent tools cannot be called
 timezone = "UTC"
 
 [agent]
