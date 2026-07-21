@@ -16,7 +16,7 @@ import (
 )
 
 const minimalConfig = `
-toolsets = ["tracker", "skills"]
+toolsets = ["db", "skills"]
 
 [agent]
 max_turns = 20
@@ -31,7 +31,7 @@ api_key_env = "OPENCODE_GO_API_KEY"
 `
 
 // writeProfile lays out a profile directory on disk.
-func writeProfile(t *testing.T, name, config, soul string, withTracker, withSkills bool) string {
+func writeProfile(t *testing.T, name, config, soul string, withDB, withSkills bool) string {
 	t.Helper()
 	root := t.TempDir()
 	dir := filepath.Join(root, "profiles", name)
@@ -60,15 +60,15 @@ func writeProfile(t *testing.T, name, config, soul string, withTracker, withSkil
 			t.Fatalf("write skill: %v", err)
 		}
 	}
-	if withTracker {
-		db, err := sql.Open("sqlite", filepath.Join(dir, "tracker.db"))
+	if withDB {
+		db, err := sql.Open("sqlite", filepath.Join(dir, "db.sqlite"))
 		if err != nil {
-			t.Fatalf("open tracker: %v", err)
+			t.Fatalf("open database: %v", err)
 		}
 		defer db.Close()
 		if _, err := db.Exec(`CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT);
 			INSERT INTO settings(key,value) VALUES ('timezone','America/New_York');`); err != nil {
-			t.Fatalf("seed tracker: %v", err)
+			t.Fatalf("seed database: %v", err)
 		}
 	}
 	return root
@@ -120,13 +120,13 @@ func TestLoadValidProfile(t *testing.T) {
 	if len(p.Config.Providers) != 1 || p.Config.Providers[0].Name != "opencode-go" {
 		t.Fatalf("providers = %+v", p.Config.Providers)
 	}
-	if !p.HasToolset("tracker") || p.HasToolset("shell") {
+	if !p.HasToolset("db") || p.HasToolset("shell") {
 		t.Fatalf("toolsets = %v", p.Config.Toolsets)
 	}
 }
 
 // The persona is the agent. Without it, the same code would write to the same
-// tracker as a generic assistant.
+// database as a generic assistant.
 func TestMissingSoulIsFatal(t *testing.T) {
 	root := writeProfile(t, "default", minimalConfig, "", true, true)
 	if _, err := Load(root, "default"); err == nil {
@@ -144,7 +144,7 @@ func TestEmptySoulIsFatal(t *testing.T) {
 // A typo in a toolset name must fail at load, not silently drop a capability
 // that only goes missing at 07:00.
 func TestUnknownToolsetIsFatal(t *testing.T) {
-	cfg := strings.Replace(minimalConfig, `["tracker", "skills"]`, `["tracker", "trackr"]`, 1)
+	cfg := strings.Replace(minimalConfig, `["db", "skills"]`, `["db", "trackr"]`, 1)
 	root := writeProfile(t, "default", cfg, "# General assistant", true, true)
 
 	_, err := Load(root, "default")
@@ -156,16 +156,16 @@ func TestUnknownToolsetIsFatal(t *testing.T) {
 	}
 }
 
-// Declaring the tracker toolset without a database is a startup error, not a
+// Declaring the database toolset without a database is a startup error, not a
 // 07:00 surprise inside an unattended cron run.
-func TestTrackerToolsetRequiresDatabase(t *testing.T) {
+func TestDBToolsetRequiresDatabase(t *testing.T) {
 	root := writeProfile(t, "default", minimalConfig, "# General assistant", false, true)
 	_, err := Load(root, "default")
 	if err == nil {
-		t.Fatal("expected a missing tracker.db to fail validation")
+		t.Fatal("expected a missing db.sqlite to fail validation")
 	}
-	if !strings.Contains(err.Error(), "tracker") {
-		t.Fatalf("error should name the tracker, got: %v", err)
+	if !strings.Contains(err.Error(), "db") {
+		t.Fatalf("error should name the database, got: %v", err)
 	}
 }
 
@@ -251,7 +251,7 @@ api_key_env = "OPENCODE_GO_API_KEY"
 
 func TestOAuthProviderRequiresEndpoints(t *testing.T) {
 	cfg := `
-toolsets = ["tracker"]
+toolsets = ["db"]
 
 [[providers]]
 kind = "openai"
@@ -272,7 +272,7 @@ oauth = true
 
 func TestSubscriptionProviderParses(t *testing.T) {
 	cfg := `
-toolsets = ["tracker"]
+toolsets = ["db"]
 
 [[providers]]
 kind = "openai"
@@ -304,7 +304,7 @@ func TestSubscriptionKindMismatchIsRefused(t *testing.T) {
 
 func TestSubscriptionAPIModeMismatchIsRefused(t *testing.T) {
 	cfg := `
-toolsets = ["tracker"]
+toolsets = ["db"]
 
 [[providers]]
 kind = "openai"
@@ -337,7 +337,7 @@ func TestSubscriptionBaseURLDefaults(t *testing.T) {
 
 func TestQwenCodingPlanUsesNativeAPIKey(t *testing.T) {
 	cfg := `
-toolsets = ["tracker"]
+toolsets = ["db"]
 
 [[providers]]
 kind = "openai"
@@ -370,7 +370,7 @@ api_key_env = "QWEN_PLAN_KEY"
 
 func TestQwenCodingPlanRequiresKeyEnv(t *testing.T) {
 	cfg := `
-toolsets = ["tracker"]
+toolsets = ["db"]
 
 [[providers]]
 kind = "openai"
@@ -386,7 +386,7 @@ subscription = "qwen"
 
 func TestKimiCodePlanUsesNativeAPIKey(t *testing.T) {
 	cfg := `
-toolsets = ["tracker"]
+toolsets = ["db"]
 
 [[providers]]
 kind = "openai"
@@ -418,7 +418,7 @@ api_key_env = "KIMI_PLAN_KEY"
 
 func TestKimiCodePlanRequiresKeyEnv(t *testing.T) {
 	cfg := `
-toolsets = ["tracker"]
+toolsets = ["db"]
 
 [[providers]]
 kind = "openai"
@@ -457,7 +457,7 @@ func TestOpenCodeAPIModeRouting(t *testing.T) {
 
 func TestBuildNamedProviderIgnoresOtherCredentials(t *testing.T) {
 	cfg := `
-toolsets = ["tracker"]
+toolsets = ["db"]
 
 [[providers]]
 kind = "openai"
@@ -614,7 +614,7 @@ func TestBuildFailsWhenKeyEnvMissing(t *testing.T) {
 }
 
 func TestUnimplementedToolsetIsRefused(t *testing.T) {
-	cfg := strings.Replace(minimalConfig, `["tracker", "skills"]`, `["tracker", "shell"]`, 1)
+	cfg := strings.Replace(minimalConfig, `["db", "skills"]`, `["db", "shell"]`, 1)
 	root := writeProfile(t, "default", cfg, "# General assistant", true, true)
 	t.Setenv("OPENCODE_GO_API_KEY", "test-key")
 
@@ -645,7 +645,7 @@ func TestAuthPathIsProfileScoped(t *testing.T) {
 
 func TestSubscriptionAccountPoolParses(t *testing.T) {
 	cfg := `
-toolsets = ["tracker"]
+toolsets = ["db"]
 
 [[providers]]
 kind = "openai"
@@ -671,7 +671,7 @@ accounts = ["primary", "backup-2"]
 
 func TestAccountPoolNamesAreValidated(t *testing.T) {
 	base := `
-toolsets = ["tracker"]
+toolsets = ["db"]
 
 [[providers]]
 kind = "openai"
@@ -688,7 +688,7 @@ accounts = %s
 	}
 }
 
-// Two profiles must share nothing: separate tracker, notes, skills, and auth.
+// Two profiles must share nothing: separate database, notes, skills, and auth.
 func TestProfilesAreIsolated(t *testing.T) {
 	root := writeProfile(t, "default", minimalConfig, "# General assistant", true, true)
 
@@ -722,11 +722,11 @@ api_key_env = "OPENCODE_GO_API_KEY"
 		t.Fatalf("load maint: %v", err)
 	}
 
-	if defaultProfile.TrackerDB == maint.TrackerDB || defaultProfile.AuthDir == maint.AuthDir || defaultProfile.NotesDir == maint.NotesDir {
+	if defaultProfile.DBPath == maint.DBPath || defaultProfile.AuthDir == maint.AuthDir || defaultProfile.NotesDir == maint.NotesDir {
 		t.Fatal("profiles must not share paths")
 	}
-	if maint.HasToolset("tracker") {
-		t.Fatal("maint must not have tracker access")
+	if maint.HasToolset("db") {
+		t.Fatal("maint must not have database access")
 	}
 
 	names, err := List(root)

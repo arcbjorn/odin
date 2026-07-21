@@ -11,11 +11,11 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// newTracker builds an in-memory tracker with the parts of the real schema
+// newDB builds an in-memory database with the parts of the real schema
 // these tests exercise. America/New_York is UTC-3 (IANA inverts the sign) — the same
-// zone the real tracker ships with, and the reason a late-night session can
+// zone the real database ships with, and the reason a late-night session can
 // land on the wrong UTC day.
-func newTracker(t *testing.T, tz string) *SQLite {
+func newDB(t *testing.T, tz string) *SQLite {
 	t.Helper()
 
 	db, err := sql.Open("sqlite", ":memory:")
@@ -72,7 +72,7 @@ func callTool(t *testing.T, h func(context.Context, json.RawMessage) (string, er
 	return h(context.Background(), raw)
 }
 
-func TestRefusesTrackerWithoutTimezone(t *testing.T) {
+func TestRefusesDBWithoutTimezone(t *testing.T) {
 	db, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		t.Fatalf("open: %v", err)
@@ -84,12 +84,12 @@ func TestRefusesTrackerWithoutTimezone(t *testing.T) {
 
 	// Guessing a zone would silently file sessions on the wrong day.
 	if _, err := NewSQLite(db); err == nil {
-		t.Fatal("expected refusal when the tracker has no timezone")
+		t.Fatal("expected refusal when the database has no timezone")
 	}
 }
 
-func TestTodayUsesTrackerTimezoneNotUTC(t *testing.T) {
-	s := newTracker(t, "America/New_York") // UTC-3
+func TestTodayUsesDBTimezoneNotUTC(t *testing.T) {
+	s := newDB(t, "America/New_York") // UTC-3
 
 	wantLocal := time.Now().In(s.Location()).Format("2006-01-02")
 	if got := s.Today(); got != wantLocal {
@@ -108,7 +108,7 @@ func TestTodayUsesTrackerTimezoneNotUTC(t *testing.T) {
 // The highest-value guard: date('now') is UTC and files a 23:51 session under
 // tomorrow.
 func TestBlocksUTCNowFunctions(t *testing.T) {
-	s := newTracker(t, "America/New_York")
+	s := newDB(t, "America/New_York")
 
 	blocked := []string{
 		`SELECT * FROM work_sessions WHERE day = date('now')`,
@@ -131,7 +131,7 @@ func TestBlocksUTCNowFunctions(t *testing.T) {
 }
 
 func TestTodayParameterResolvesToLocalDate(t *testing.T) {
-	s := newTracker(t, "America/New_York")
+	s := newDB(t, "America/New_York")
 
 	ins := `INSERT INTO daily_reviews(date, actual_output, day_score) VALUES (:today, 'shipped odin', 8)`
 	if _, err := callTool(t, s.handleExec, ins); err != nil {
@@ -151,7 +151,7 @@ func TestTodayParameterResolvesToLocalDate(t *testing.T) {
 }
 
 func TestQueryRejectsWrites(t *testing.T) {
-	s := newTracker(t, "UTC")
+	s := newDB(t, "UTC")
 	writes := []string{
 		`INSERT INTO events(timestamp,type,note) VALUES ('2026-07-20 10:00','idea','x')`,
 		`UPDATE daily_reviews SET day_score = 10`,
@@ -165,7 +165,7 @@ func TestQueryRejectsWrites(t *testing.T) {
 }
 
 func TestExecRejectsDestructiveVerbs(t *testing.T) {
-	s := newTracker(t, "UTC")
+	s := newDB(t, "UTC")
 	for _, stmt := range []string{
 		`DELETE FROM events WHERE id = 1`,
 		`DROP TABLE events`,
@@ -178,7 +178,7 @@ func TestExecRejectsDestructiveVerbs(t *testing.T) {
 }
 
 func TestRejectsStackedStatements(t *testing.T) {
-	s := newTracker(t, "UTC")
+	s := newDB(t, "UTC")
 	stmt := `INSERT INTO events(timestamp,type,note) VALUES ('2026-07-20 10:00','idea','a'); DROP TABLE events`
 	if _, err := callTool(t, s.handleExec, stmt); err == nil {
 		t.Fatal("expected stacked statements to be rejected")
@@ -188,7 +188,7 @@ func TestRejectsStackedStatements(t *testing.T) {
 // An UPDATE matching nothing usually means the WHERE targeted the wrong day.
 // Reporting success there is how a wrong date rots silently in the log.
 func TestZeroRowsAffectedIsAnError(t *testing.T) {
-	s := newTracker(t, "UTC")
+	s := newDB(t, "UTC")
 	stmt := `UPDATE daily_reviews SET day_score = 9 WHERE date = '1999-01-01'`
 	_, err := callTool(t, s.handleExec, stmt)
 	if err == nil {
@@ -201,7 +201,7 @@ func TestZeroRowsAffectedIsAnError(t *testing.T) {
 
 // He trains once per day per activity, so a wide UPDATE means a missing WHERE.
 func TestWideUpdateIsRejected(t *testing.T) {
-	s := newTracker(t, "UTC")
+	s := newDB(t, "UTC")
 	for _, d := range []string{"2026-07-10", "2026-07-11", "2026-07-12", "2026-07-13", "2026-07-14", "2026-07-15"} {
 		if _, err := callTool(t, s.handleExec,
 			`INSERT INTO daily_reviews(date, day_score) VALUES ('`+d+`', 5)`); err != nil {
@@ -221,7 +221,7 @@ func TestWideUpdateIsRejected(t *testing.T) {
 // A session crossing midnight belongs to the day it STARTED. He trains late on
 // purpose; that is normal, not an error to round away.
 func TestSessionCrossingMidnightKeepsStartDay(t *testing.T) {
-	s := newTracker(t, "America/New_York")
+	s := newDB(t, "America/New_York")
 
 	ins := `INSERT INTO work_sessions(project_id, started_at, ended_at, summary)
 	        VALUES (1, '2026-07-19 23:51', '2026-07-20 00:46', 'late session')`
@@ -241,7 +241,7 @@ func TestSessionCrossingMidnightKeepsStartDay(t *testing.T) {
 // NULL must render distinctly from an empty string: an unanswered field is
 // accurate and must never be mistaken for a value or filled in with a guess.
 func TestNullRendersDistinctly(t *testing.T) {
-	s := newTracker(t, "UTC")
+	s := newDB(t, "UTC")
 	if _, err := callTool(t, s.handleExec,
 		`INSERT INTO daily_reviews(date, actual_output) VALUES ('2026-07-20', 'shipped')`); err != nil {
 		t.Fatalf("insert: %v", err)
@@ -258,7 +258,7 @@ func TestNullRendersDistinctly(t *testing.T) {
 }
 
 func TestEmptyResultIsExplicit(t *testing.T) {
-	s := newTracker(t, "UTC")
+	s := newDB(t, "UTC")
 	out, err := callTool(t, s.handleQuery, `SELECT * FROM events WHERE type = 'nothing'`)
 	if err != nil {
 		t.Fatalf("query: %v", err)
@@ -269,7 +269,7 @@ func TestEmptyResultIsExplicit(t *testing.T) {
 }
 
 func TestResultsAreTruncated(t *testing.T) {
-	s := newTracker(t, "UTC")
+	s := newDB(t, "UTC")
 	for i := 0; i < maxRows+50; i++ {
 		if _, err := callTool(t, s.handleExec,
 			`INSERT INTO events(timestamp,type,note) VALUES ('2026-07-20 10:00','idea','n')`); err != nil {
@@ -289,7 +289,7 @@ func TestResultsAreTruncated(t *testing.T) {
 // The tools must satisfy the registry's schema-size limit — that limit exists
 // because oversized schemas caused the 162-call loop.
 func TestToolSchemasAreSmall(t *testing.T) {
-	s := newTracker(t, "UTC")
+	s := newDB(t, "UTC")
 	for _, tool := range []struct {
 		name  string
 		props int

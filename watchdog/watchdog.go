@@ -2,7 +2,7 @@
 //
 // Deliberately dumber than what it watches. It reads state files on disk and
 // posts to the Telegram Bot API directly — no model call, no provider, no
-// agent loop, no tracker. Everything it could share with the agent is a way
+// agent loop, no database. Everything it could share with the agent is a way
 // they could fail together, and a watchdog that dies with the thing it
 // watches is worse than none: it converts a visible outage into a silent one.
 //

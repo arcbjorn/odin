@@ -26,14 +26,14 @@ const maxRows = 200
 // easier for a weaker model to fill than one tool with a mode flag.
 type SQLite struct {
 	db *sql.DB
-	// tz is the user's local zone, read from the tracker's settings table.
+	// tz is the user's local zone, read from the database's settings table.
 	// The server runs UTC; date('now') in SQL is UTC and lands on the wrong
 	// day for anything logged late at night. Every date this package computes
 	// goes through tz instead.
 	tz *time.Location
 }
 
-// NewSQLite opens the tracker and loads its timezone.
+// NewSQLite opens the database and loads its timezone.
 //
 // The timezone lives in the DB rather than config because it is switchable
 // live when travelling — the agent updates one row and "today" moves with it.
@@ -44,7 +44,7 @@ func NewSQLite(db *sql.DB) (*SQLite, error) {
 	err := db.QueryRow(`SELECT value FROM settings WHERE key = 'timezone'`).Scan(&name)
 	switch {
 	case err == sql.ErrNoRows:
-		return nil, fmt.Errorf("tracker has no timezone in settings; refusing to guess")
+		return nil, fmt.Errorf("database has no timezone in settings; refusing to guess")
 	case err != nil:
 		return nil, fmt.Errorf("read timezone: %w", err)
 	}
@@ -57,14 +57,14 @@ func NewSQLite(db *sql.DB) (*SQLite, error) {
 	return s, nil
 }
 
-// Now returns the current time in the tracker's local zone.
+// Now returns the current time in the database's local zone.
 func (s *SQLite) Now() time.Time { return time.Now().In(s.tz) }
 
 // Today returns the local date as YYYY-MM-DD. Never derive this from the
 // server clock or SQL date('now') — both are UTC.
 func (s *SQLite) Today() string { return s.Now().Format("2006-01-02") }
 
-// Location exposes the tracker's zone for the scheduler, which must fire jobs
+// Location exposes the database's zone for the scheduler, which must fire jobs
 // on local wall-clock time.
 func (s *SQLite) Location() *time.Location { return s.tz }
 
@@ -281,9 +281,9 @@ func checkWriteVerb(stmt string) error {
 	case "insert", "update":
 		return nil
 	case "delete", "drop", "alter", "truncate":
-		// The tracker is an append-mostly log. Losing history silently is
+		// The database is an append-mostly log. Losing history silently is
 		// worse than any convenience deletion buys.
-		return fmt.Errorf("%s is not permitted on the tracker", strings.ToUpper(firstWord(stmt)))
+		return fmt.Errorf("%s is not permitted on the database", strings.ToUpper(firstWord(stmt)))
 	default:
 		return fmt.Errorf("exec accepts INSERT or UPDATE only")
 	}

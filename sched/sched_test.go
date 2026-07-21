@@ -157,10 +157,10 @@ func TestInvalidExpressions(t *testing.T) {
 	}
 }
 
-// The whole reason the scheduler is in-process: the tracker's timezone is
+// The whole reason the scheduler is in-process: the database's timezone is
 // switchable live for travel, and job times must move with it. A systemd timer
 // would keep firing on host time.
-func TestJobTimesFollowTrackerTimezone(t *testing.T) {
+func TestJobTimesFollowDBTimezone(t *testing.T) {
 	home, err := time.LoadLocation("America/New_York") // UTC-3
 	if err != nil {
 		t.Fatalf("home zone: %v", err)

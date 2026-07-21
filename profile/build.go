@@ -21,9 +21,9 @@ type Runtime struct {
 	Tools    *agent.Registry
 	Loop     *agent.Loop
 
-	// DB is nil when the tracker toolset is not enabled.
+	// DB is nil when the db toolset is not enabled.
 	DB     *sql.DB
-	Track  *tools.SQLite
+	Store  *tools.SQLite
 	Skills *tools.Skills
 }
 
@@ -54,39 +54,39 @@ func Build(p *Profile, log *slog.Logger) (*Runtime, error) {
 
 	rt := &Runtime{Profile: p, Provider: provider, Tools: agent.NewRegistry()}
 
-	if p.HasToolset("tracker") {
-		db, err := tools.OpenTracker(p.TrackerDB)
+	if p.HasToolset("db") {
+		db, err := tools.OpenDB(p.DBPath)
 		if err != nil {
 			return nil, err
 		}
-		track, err := tools.NewSQLite(db)
+		store, err := tools.NewSQLite(db)
 		if err != nil {
 			db.Close()
 			return nil, err
 		}
-		rt.DB, rt.Track = db, track
+		rt.DB, rt.Store = db, store
 
-		for _, t := range []agent.Tool{track.QueryTool(), track.ExecTool()} {
+		for _, t := range []agent.Tool{store.QueryTool(), store.ExecTool()} {
 			if err := rt.Tools.Register(t); err != nil {
 				rt.Close()
 				return nil, err
 			}
 		}
 
-		// The tracker's timezone is authoritative and switchable live for
+		// The database's timezone is authoritative and switchable live for
 		// travel; config.toml's is informational. A mismatch means one of the
 		// two is stale, which is worth surfacing before it misfiles a session.
-		if p.Config.Timezone != "" && p.Config.Timezone != track.Location().String() {
-			log.Warn("timezone mismatch between config and tracker; the tracker wins",
-				"config", p.Config.Timezone, "tracker", track.Location().String())
+		if p.Config.Timezone != "" && p.Config.Timezone != store.Location().String() {
+			log.Warn("timezone mismatch between config and database; the database wins",
+				"config", p.Config.Timezone, "db", store.Location().String())
 		}
 	}
 
 	if p.HasToolset("file") {
 		files, err := tools.NewFiles(tools.FilesConfig{
 			Root: p.NotesDir,
-			// File writes require the tracker-enabled profile boundary.
-			ReadOnly: !p.HasToolset("tracker"),
+			// File writes require the database-enabled profile boundary.
+			ReadOnly: !p.HasToolset("db"),
 		})
 		if err != nil {
 			rt.Close()

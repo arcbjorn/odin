@@ -242,7 +242,7 @@ func (t *Telegram) handle(ctx context.Context, u update) {
 		return // non-text: photos, stickers, voice
 	}
 
-	// The allowlist is enforced here, before the agent or the tracker is
+	// The allowlist is enforced here, before the agent or the database is
 	// touched. An unknown sender gets no reply at all — a bot that answers
 	// strangers confirms it exists.
 	if !t.allowed[msg.From.ID] {

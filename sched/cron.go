@@ -1,10 +1,10 @@
 // Package sched runs jobs on a wall-clock schedule in the agent's own process.
 //
-// Why in-process rather than systemd timers: the tracker's timezone is
+// Why in-process rather than systemd timers: the database's timezone is
 // switchable live for travel, and systemd resolves timers against the host
 // clock. One row change would silently leave every timer an hour wrong, which
 // is precisely the class of quiet failure this agent must not have. Keeping
-// the clock here means "local time" always means the same thing the tracker
+// the clock here means "local time" always means the same thing the database
 // means, and next-run state is queryable rather than parsed out of systemctl.
 package sched
 

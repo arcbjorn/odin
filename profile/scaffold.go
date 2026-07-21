@@ -14,14 +14,14 @@ type ScaffoldOptions struct {
 	Root string
 	Name string
 
-	// Timezone seeds the tracker's settings table. This is the value that
+	// Timezone seeds the database's settings table. This is the value that
 	// defines "today" for the whole agent, so it is asked for rather than
 	// guessed — a wrong zone misfiles every late-night session.
 	Timezone string
 
-	// TrackerSchema is an optional path to a schema.sql to apply. When empty,
+	// SchemaPath is an optional path to a schema.sql to apply. When empty,
 	// a minimal schema is created that only carries the timezone setting.
-	TrackerSchema string
+	SchemaPath string
 }
 
 // Scaffold creates a profile directory that loads and runs.
@@ -45,7 +45,7 @@ func Scaffold(opts ScaffoldOptions) (string, error) {
 
 	dir := filepath.Join(opts.Root, "profiles", opts.Name)
 	if _, err := os.Stat(dir); err == nil {
-		// Never overwrite: the directory holds a tracker database and OAuth
+		// Never overwrite: the directory holds a database and OAuth
 		// tokens, and clobbering either is unrecoverable.
 		return "", fmt.Errorf("profile %q already exists at %s", opts.Name, dir)
 	}
@@ -68,16 +68,16 @@ func Scaffold(opts ScaffoldOptions) (string, error) {
 		}
 	}
 
-	if err := scaffoldTracker(filepath.Join(dir, "tracker.db"), opts); err != nil {
+	if err := scaffoldDB(filepath.Join(dir, "db.sqlite"), opts); err != nil {
 		return "", err
 	}
 	return dir, nil
 }
 
-func scaffoldTracker(path string, opts ScaffoldOptions) error {
+func scaffoldDB(path string, opts ScaffoldOptions) error {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
-		return fmt.Errorf("create tracker: %w", err)
+		return fmt.Errorf("create database: %w", err)
 	}
 	defer db.Close()
 
@@ -86,10 +86,10 @@ func scaffoldTracker(path string, opts ScaffoldOptions) error {
 		return fmt.Errorf("enable wal: %w", err)
 	}
 
-	if opts.TrackerSchema != "" {
-		raw, err := os.ReadFile(opts.TrackerSchema)
+	if opts.SchemaPath != "" {
+		raw, err := os.ReadFile(opts.SchemaPath)
 		if err != nil {
-			return fmt.Errorf("read schema %s: %w", opts.TrackerSchema, err)
+			return fmt.Errorf("read schema %s: %w", opts.SchemaPath, err)
 		}
 		if _, err := db.Exec(string(raw)); err != nil {
 			return fmt.Errorf("apply schema: %w", err)
@@ -115,7 +115,7 @@ func scaffoldTracker(path string, opts ScaffoldOptions) error {
 func scaffoldConfig(opts ScaffoldOptions) string {
 	return fmt.Sprintf(`# Profile: %s
 # Credentials belong in environment variables, never in this file.
-toolsets = ["tracker", "file"]
+toolsets = ["db", "file"]
 timezone = "%s"
 
 [agent]
@@ -160,9 +160,9 @@ func scaffoldGitignore() string {
 auth/
 state/
 notes/
-tracker.db
-tracker.db-shm
-tracker.db-wal
+db.sqlite
+db.sqlite-shm
+db.sqlite-wal
 *.env
 `
 }

@@ -161,7 +161,7 @@ func TestRefusesMissingToken(t *testing.T) {
 	}
 }
 
-// The allowlist is enforced at the transport, before the agent or the tracker
+// The allowlist is enforced at the transport, before the agent or the database
 // is touched. A stranger gets no reply at all.
 func TestUnauthorizedUserIsIgnored(t *testing.T) {
 	agent := &fakeAgent{reply: "should not happen"}

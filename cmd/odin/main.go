@@ -248,7 +248,7 @@ func cmdInit(args []string) error {
 	fs := flag.NewFlagSet("init", flag.ExitOnError)
 	common := bindCommon(fs)
 	timezone := fs.String("timezone", "", "IANA timezone, e.g. Europe/Lisbon (required)")
-	schema := fs.String("tracker-schema", "", "optional schema.sql to apply to the new tracker")
+	schema := fs.String("db-schema", "", "optional schema.sql to apply to the new database")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -275,7 +275,7 @@ func cmdInit(args []string) error {
 		Root:          common.root,
 		Name:          common.profile,
 		Timezone:      *timezone,
-		TrackerSchema: *schema,
+		SchemaPath: *schema,
 	})
 	if err != nil {
 		return err
@@ -603,9 +603,9 @@ func cmdStatus(args []string) error {
 		}
 	}
 
-	if rt.Track != nil {
-		fmt.Printf("tracker   %s (timezone %s, today %s)\n",
-			p.TrackerDB, rt.Track.Location(), rt.Track.Today())
+	if rt.Store != nil {
+		fmt.Printf("database   %s (timezone %s, today %s)\n",
+			p.DBPath, rt.Store.Location(), rt.Store.Today())
 	}
 	if rt.Skills != nil {
 		names, _ := rt.Skills.List()
@@ -833,17 +833,17 @@ func buildScheduler(rt *profile.Runtime, tg *gateway.Telegram, log *slog.Logger)
 	if len(defs.Jobs) == 0 {
 		return nil, nil
 	}
-	if rt.Track == nil {
-		// Local time is defined by the tracker. Without it the scheduler
+	if rt.Store == nil {
+		// Local time is defined by the database. Without it the scheduler
 		// would have to guess, and a guess misfires every job.
-		return nil, errors.New("jobs require the tracker toolset for its timezone")
+		return nil, errors.New("jobs require the db toolset for its timezone")
 	}
 
 	chatID := rt.Profile.Config.Telegram.ChatID
 
 	return sched.New(sched.Config{
 		Jobs:      defs.Jobs,
-		Location:  rt.Track.Location(),
+		Location:  rt.Store.Location(),
 		Logger:    log,
 		StatePath: filepath.Join(rt.Profile.Dir, "state", "scheduler.json"),
 		Runner: func(ctx context.Context, job sched.Job) error {

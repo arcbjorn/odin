@@ -8,7 +8,7 @@ import (
 )
 
 const webConfig = `
-toolsets = ["tracker", "web"]
+toolsets = ["db", "web"]
 
 [[providers]]
 kind = "openai"

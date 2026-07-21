@@ -2,7 +2,7 @@
 //
 // A separate binary, not an `odin` subcommand. The whole value of a watchdog
 // is that it cannot fail the same way as the thing it watches: it shares no
-// provider, no agent loop, no tracker, and no config parser with the agent.
+// provider, no agent loop, no database, and no config parser with the agent.
 // Folding it into the same binary would give them a common failure mode.
 //
 // Run from a systemd timer every 30 minutes:

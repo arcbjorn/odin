@@ -38,8 +38,8 @@ func TestScaffoldLoadsWithoutEdits(t *testing.T) {
 	}
 	defer rt.Close()
 
-	if rt.Track.Location().String() != "UTC" {
-		t.Fatalf("timezone = %s", rt.Track.Location())
+	if rt.Store.Location().String() != "UTC" {
+		t.Fatalf("timezone = %s", rt.Store.Location())
 	}
 	for _, name := range []string{"query", "exec", "read_file"} {
 		if _, ok := rt.Tools.Lookup(name); !ok {
@@ -61,7 +61,7 @@ func TestScaffoldRequiresValidTimezone(t *testing.T) {
 	}
 }
 
-// The directory holds a tracker database and OAuth tokens; clobbering either
+// The directory holds a database database and OAuth tokens; clobbering either
 // is unrecoverable.
 func TestScaffoldNeverOverwrites(t *testing.T) {
 	root := t.TempDir()
@@ -94,7 +94,7 @@ func TestScaffoldRejectsPathNames(t *testing.T) {
 	}
 }
 
-// The tracker must carry its timezone: NewSQLite refuses to start without one
+// The database must carry its timezone: NewSQLite refuses to start without one
 // rather than defaulting to UTC.
 func TestScaffoldSeedsTimezone(t *testing.T) {
 	root := t.TempDir()
@@ -103,7 +103,7 @@ func TestScaffoldSeedsTimezone(t *testing.T) {
 		t.Fatalf("Scaffold: %v", err)
 	}
 
-	db, err := sql.Open("sqlite", filepath.Join(dir, "tracker.db"))
+	db, err := sql.Open("sqlite", filepath.Join(dir, "db.sqlite"))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -126,7 +126,7 @@ func TestScaffoldEnablesWAL(t *testing.T) {
 		t.Fatalf("Scaffold: %v", err)
 	}
 
-	db, err := sql.Open("sqlite", filepath.Join(dir, "tracker.db"))
+	db, err := sql.Open("sqlite", filepath.Join(dir, "db.sqlite"))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -153,13 +153,13 @@ CREATE TABLE records (id INTEGER PRIMARY KEY, value TEXT);`
 	}
 
 	dir, err := Scaffold(ScaffoldOptions{
-		Root: root, Name: "default", Timezone: "America/New_York", TrackerSchema: schema,
+		Root: root, Name: "default", Timezone: "America/New_York", SchemaPath: schema,
 	})
 	if err != nil {
 		t.Fatalf("Scaffold with real schema: %v", err)
 	}
 
-	db, err := sql.Open("sqlite", filepath.Join(dir, "tracker.db"))
+	db, err := sql.Open("sqlite", filepath.Join(dir, "db.sqlite"))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -199,7 +199,7 @@ func TestScaffoldReportsBadSchemaPath(t *testing.T) {
 	root := t.TempDir()
 	_, err := Scaffold(ScaffoldOptions{
 		Root: root, Name: "default", Timezone: "UTC",
-		TrackerSchema: filepath.Join(t.TempDir(), "nope.sql"),
+		SchemaPath: filepath.Join(t.TempDir(), "nope.sql"),
 	})
 	if err == nil {
 		t.Fatal("expected a missing schema file to fail")
@@ -221,7 +221,7 @@ func TestScaffoldGitignoresSecrets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read gitignore: %v", err)
 	}
-	for _, want := range []string{"auth/", "tracker.db", "*.env", "state/"} {
+	for _, want := range []string{"auth/", "db.sqlite", "*.env", "state/"} {
 		if !strings.Contains(string(body), want) {
 			t.Errorf(".gitignore missing %q", want)
 		}

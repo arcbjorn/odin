@@ -7,7 +7,7 @@
 //	  SOUL.md         system prompt
 //	  skills/         markdown skill documents
 //	  notes/          the model's scoped file area
-//	  tracker.db      profile database
+//	  db.sqlite      profile database
 //	  auth/           OAuth tokens, 0600
 //
 // Everything is profile-scoped. There are no globals and no default profile;
@@ -35,7 +35,7 @@ type Profile struct {
 	// Resolved paths. Every one is inside Dir.
 	SkillsDir string
 	NotesDir  string
-	TrackerDB string
+	DBPath string
 	AuthDir   string
 }
 
@@ -48,7 +48,7 @@ type Config struct {
 	// Providers is the fallback chain, in order. providers[0] is primary.
 	Providers []ProviderConfig
 
-	// Timezone is informational only. The tracker's settings table is the
+	// Timezone is informational only. The database's settings table is the
 	// source of truth and is switchable live when travelling; this exists so
 	// `odin status` can flag a mismatch.
 	Timezone string
@@ -131,7 +131,7 @@ type TelegramConfig struct {
 // knownToolsets is the closed set of toolset names. A typo in config.toml
 // must fail at load, not silently omit a capability at 07:00.
 var knownToolsets = map[string]bool{
-	"tracker": true, // sqlite query + exec against tracker.db
+	"db": true, // sqlite query + exec against db.sqlite
 	"file":    true, // scoped read/write/list under notes/
 	"skills":  true, // read markdown skill documents
 	"web":     true, // fetch + search
@@ -168,7 +168,7 @@ func Load(root, name string) (*Profile, error) {
 		Dir:       dir,
 		SkillsDir: filepath.Join(dir, "skills"),
 		NotesDir:  filepath.Join(dir, "notes"),
-		TrackerDB: filepath.Join(dir, "tracker.db"),
+		DBPath: filepath.Join(dir, "db.sqlite"),
 		AuthDir:   filepath.Join(dir, "auth"),
 	}
 
@@ -275,7 +275,7 @@ func (p *Profile) validate() error {
 	}
 
 	if len(p.Config.Toolsets) == 0 {
-		return fmt.Errorf("no toolsets enabled; an agent with no tools cannot read its own tracker")
+		return fmt.Errorf("no toolsets enabled; an agent with no tools cannot read its own database")
 	}
 	for _, ts := range p.Config.Toolsets {
 		if !knownToolsets[ts] {
@@ -283,12 +283,12 @@ func (p *Profile) validate() error {
 		}
 	}
 
-	// The tracker toolset needs a database. Discovering this at 07:00, inside
+	// The db toolset needs a database. Discovering this at 07:00, inside
 	// a cron run with no human present, is exactly the silent failure mode
 	// this package exists to prevent.
-	if p.HasToolset("tracker") {
-		if _, err := os.Stat(p.TrackerDB); err != nil {
-			return fmt.Errorf("toolset \"tracker\" is enabled but %s is missing", p.TrackerDB)
+	if p.HasToolset("db") {
+		if _, err := os.Stat(p.DBPath); err != nil {
+			return fmt.Errorf("toolset \"database\" is enabled but %s is missing", p.DBPath)
 		}
 	}
 	if p.HasToolset("skills") {

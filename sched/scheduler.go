@@ -60,7 +60,7 @@ type Scheduler struct {
 type Config struct {
 	Jobs []Job
 
-	// Location must come from the tracker's settings table, not from the host
+	// Location must come from the database's settings table, not from the host
 	// clock or config.toml. It is switchable live for travel, and every job
 	// time must move with it.
 	Location *time.Location
@@ -83,7 +83,7 @@ type Config struct {
 func New(cfg Config) (*Scheduler, error) {
 	if cfg.Location == nil {
 		// Defaulting to UTC would silently misfile every late-night session.
-		return nil, errors.New("scheduler requires a location from the tracker")
+		return nil, errors.New("scheduler requires a location from the database")
 	}
 	if cfg.Runner == nil {
 		return nil, errors.New("scheduler requires a runner")
