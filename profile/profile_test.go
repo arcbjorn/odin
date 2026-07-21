@@ -323,7 +323,7 @@ func TestSubscriptionBaseURLDefaults(t *testing.T) {
 	tests := map[string]string{
 		"codex":   "https://chatgpt.com/backend-api/codex",
 		"claude":  "https://api.anthropic.com/v1",
-		"xai":     "https://cli-chat-proxy.grok.com/v1",
+		"xai":     "https://api.x.ai/v1",
 		"minimax": "https://api.minimax.io/anthropic",
 		"qwen":    "https://coding-intl.dashscope.aliyuncs.com/v1",
 		"kimi":    "https://api.kimi.com/coding/v1",
@@ -488,18 +488,15 @@ api_key_env = "SECOND_KEY"
 	}
 }
 
-func TestXAIPlanUsesGrokBuildProxy(t *testing.T) {
+func TestXAIPlanUsesStandardAPI(t *testing.T) {
 	pc := ProviderConfig{Kind: "openai", Name: "grok", Model: "grok-build", Subscription: "xai"}
 	if got := providerAPIMode(pc); got != "chat_completions" {
 		t.Fatalf("api mode = %q", got)
 	}
-	if got := providerBaseURL(pc); got != "https://cli-chat-proxy.grok.com/v1" {
+	// A SuperGrok subscription token authenticates against the standard xAI
+	// API, not the version-gated Grok Build CLI proxy.
+	if got := providerBaseURL(pc); got != "https://api.x.ai/v1" {
 		t.Fatalf("base URL = %q", got)
-	}
-	// The proxy 426s a request with no CLI version, so the version header the
-	// xai branch sends must never be blanked. See grokCLIVersion in build.go.
-	if grokCLIVersion == "" {
-		t.Fatal("grokCLIVersion is empty; xai requests will be rejected with 426")
 	}
 }
 

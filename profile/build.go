@@ -39,11 +39,6 @@ func (r *Runtime) Close() error {
 //
 // Tools are registered strictly from the allowlist. A toolset absent from
 // config.toml is never constructed, so its capability does not exist.
-// grokCLIVersion is the version Odin reports to xAI's subscription proxy,
-// which rejects requests from clients below its minimum. Raise this if the
-// proxy starts returning HTTP 426.
-const grokCLIVersion = "0.1.202"
-
 func Build(p *Profile, log *slog.Logger) (*Runtime, error) {
 	if log == nil {
 		log = slog.Default()
@@ -237,17 +232,9 @@ func buildProvider(p *Profile, log *slog.Logger) (model.Provider, error) {
 			headers := map[string]string(nil)
 			dropEffort := pc.DropEffort
 			if pc.Subscription == "xai" {
-				headers = map[string]string{
-					"X-XAI-Token-Auth":      "xai-grok-cli",
-					"x-grok-model-override": pc.Model,
-					// The proxy version-gates requests: without a CLI version it
-					// returns 426 "Grok CLI version (none) is outdated". Bump
-					// grokCLIVersion when the proxy raises its minimum.
-					"x-grok-cli-version": grokCLIVersion,
-				}
-				// Grok Build chooses the reasoning policy for its subscription
-				// model and does not document reasoning_effort on the proxy.
-				dropEffort = true
+				// The standard xAI API takes the subscription token as a plain
+				// bearer and needs no proxy-specific headers. reasoning_effort
+				// is accepted on grok-4.5; leave DropEffort to config.
 			}
 			if pc.Subscription == "kimi" {
 				headers = map[string]string{"User-Agent": "github.com/arcbjorn/odin/1"}
@@ -330,7 +317,11 @@ func providerBaseURL(pc ProviderConfig) string {
 	case "claude":
 		return "https://api.anthropic.com/v1"
 	case "xai":
-		return "https://cli-chat-proxy.grok.com/v1"
+		// The standard xAI API accepts a SuperGrok subscription OAuth token as
+		// a plain bearer. The cli-chat-proxy.grok.com endpoint is a separate
+		// Grok Build product that version-gates requests (HTTP 426); it is not
+		// what a SuperGrok plan authenticates against.
+		return "https://api.x.ai/v1"
 	case "minimax":
 		return "https://api.minimax.io/anthropic"
 	case "qwen":
