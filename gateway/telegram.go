@@ -164,8 +164,28 @@ type apiResponse struct {
 }
 
 // Run polls for updates until ctx is cancelled.
+// botCommands is the menu Telegram shows when a user types "/". It is static —
+// the commands are compiled in — so it only changes across deploys.
+var botCommands = []botCommand{
+	{Command: "new", Description: "Start a fresh conversation"},
+	{Command: "reset", Description: "Start a fresh conversation"},
+}
+
+type botCommand struct {
+	Command     string `json:"command"`
+	Description string `json:"description"`
+}
+
 func (t *Telegram) Run(ctx context.Context) error {
 	t.log.Info("telegram gateway started", "allowed_users", len(t.allowed))
+
+	// Register the command menu so the commands are discoverable, but only if
+	// it differs from what the bot already advertises — setMyCommands replaces
+	// the whole menu, so re-sending an identical set on every restart is a
+	// wasted call. Non-fatal: a bot that can't set its menu still works.
+	if err := t.syncCommands(ctx); err != nil {
+		t.log.Warn("could not sync command menu", "error", err)
+	}
 
 	backoff := time.Second
 	for {
@@ -293,6 +313,49 @@ func (t *Telegram) respond(ctx context.Context, chatID int64, text string) {
 
 	sess.commit(updated, time.Now())
 	t.send(ctx, chatID, reply)
+}
+
+// syncCommands registers the command menu, but only when it differs from what
+// the bot already advertises. getMyCommands returns the current set; if it
+// already matches, no setMyCommands call is made.
+func (t *Telegram) syncCommands(ctx context.Context) error {
+	current, err := t.call(ctx, "getMyCommands", url.Values{})
+	if err != nil {
+		return err
+	}
+	var existing []botCommand
+	if err := json.Unmarshal(current, &existing); err != nil {
+		// A decode failure shouldn't block registration — fall through and set.
+		existing = nil
+	}
+	if sameCommands(existing, botCommands) {
+		t.log.Debug("command menu already current")
+		return nil
+	}
+
+	encoded, err := json.Marshal(botCommands)
+	if err != nil {
+		return err
+	}
+	if _, err := t.call(ctx, "setMyCommands", url.Values{"commands": {string(encoded)}}); err != nil {
+		return err
+	}
+	t.log.Info("registered telegram command menu", "commands", len(botCommands))
+	return nil
+}
+
+// sameCommands compares two command sets by name and description, order
+// included — Telegram returns them in the order they were set.
+func sameCommands(a, b []botCommand) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].Command != b[i].Command || a[i].Description != b[i].Description {
+			return false
+		}
+	}
+	return true
 }
 
 // command handles gateway-local slash commands. Everything else falls through

@@ -52,8 +52,10 @@ func (f *fakeAgent) callCount() int {
 
 // fakeTelegram stands in for api.telegram.org.
 type fakeTelegram struct {
-	mu   sync.Mutex
-	sent []string
+	mu           sync.Mutex
+	sent         []string
+	setCommands  int    // times setMyCommands was called
+	getResult    string // what getMyCommands returns (default: empty set)
 }
 
 func (f *fakeTelegram) server(t *testing.T) *httptest.Server {
@@ -62,16 +64,37 @@ func (f *fakeTelegram) server(t *testing.T) *httptest.Server {
 		if err := r.ParseForm(); err != nil {
 			t.Errorf("parse form: %v", err)
 		}
-		if strings.HasSuffix(r.URL.Path, "/sendMessage") {
+		w.Header().Set("Content-Type", "application/json")
+
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/sendMessage"):
 			f.mu.Lock()
 			f.sent = append(f.sent, r.FormValue("text"))
 			f.mu.Unlock()
+		case strings.HasSuffix(r.URL.Path, "/getMyCommands"):
+			f.mu.Lock()
+			result := f.getResult
+			f.mu.Unlock()
+			if result == "" {
+				result = "[]"
+			}
+			io.WriteString(w, `{"ok":true,"result":`+result+`}`)
+			return
+		case strings.HasSuffix(r.URL.Path, "/setMyCommands"):
+			f.mu.Lock()
+			f.setCommands++
+			f.mu.Unlock()
 		}
-		w.Header().Set("Content-Type", "application/json")
 		io.WriteString(w, `{"ok":true,"result":[]}`)
 	}))
 	t.Cleanup(srv.Close)
 	return srv
+}
+
+func (f *fakeTelegram) setCommandCalls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.setCommands
 }
 
 func (f *fakeTelegram) messages() []string {
@@ -453,6 +476,42 @@ func TestSplitHandlesUnicode(t *testing.T) {
 }
 
 // Scheduled jobs reach the user through Notify; it must respect the allowlist.
+// The command menu must be registered so users can discover /new and /reset.
+func TestSyncCommandsRegistersWhenMenuIsEmpty(t *testing.T) {
+	agent := &fakeAgent{reply: "ok"}
+	g, fake := newGateway(t, agent, []int64{1})
+
+	if err := g.syncCommands(context.Background()); err != nil {
+		t.Fatalf("syncCommands: %v", err)
+	}
+	if fake.setCommandCalls() != 1 {
+		t.Fatalf("expected one setMyCommands call, got %d", fake.setCommandCalls())
+	}
+}
+
+// setMyCommands replaces the whole menu, so an identical set must not be
+// re-sent on every restart.
+func TestSyncCommandsSkipsWhenMenuMatches(t *testing.T) {
+	agent := &fakeAgent{reply: "ok"}
+	g, fake := newGateway(t, agent, []int64{1})
+
+	// Make getMyCommands return exactly what the gateway would set.
+	current, err := json.Marshal(botCommands)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake.mu.Lock()
+	fake.getResult = string(current)
+	fake.mu.Unlock()
+
+	if err := g.syncCommands(context.Background()); err != nil {
+		t.Fatalf("syncCommands: %v", err)
+	}
+	if fake.setCommandCalls() != 0 {
+		t.Fatalf("expected no setMyCommands call when the menu is current, got %d", fake.setCommandCalls())
+	}
+}
+
 func TestNotifyRespectsAllowlist(t *testing.T) {
 	agent := &fakeAgent{reply: "ack"}
 	g, fake := newGateway(t, agent, []int64{123456789})
