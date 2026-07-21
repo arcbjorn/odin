@@ -62,7 +62,11 @@ type responsesRequest struct {
 	ParallelToolCalls bool                `json:"parallel_tool_calls,omitempty"`
 	MaxOutputTokens   int                 `json:"max_output_tokens,omitempty"`
 	Reasoning         *responsesReasoning `json:"reasoning,omitempty"`
-	Store             bool                `json:"store"`
+	// Include asks codex to return the encrypted reasoning item. Without it, a
+	// turn that reasons before acting completes with the reasoning sealed and
+	// no tool call surfaced — end_turn, empty text, zero calls.
+	Include []string `json:"include,omitempty"`
+	Store   bool     `json:"store"`
 	// Stream is required by the codex backend, which rejects non-streaming
 	// requests with 400 "Stream must be set to true". Other Responses hosts
 	// (xAI) accept a single JSON response, so this is set only for codex.
@@ -148,6 +152,11 @@ func (r *Responses) Complete(ctx context.Context, req Request) (*Response, error
 	if req.Effort != "" && !r.xai {
 		body.Reasoning = &responsesReasoning{Effort: req.Effort}
 		body.Reasoning.Summary = "auto"
+		if r.codex {
+			// codex reasons before acting and seals the reasoning item; asking
+			// for it back is what lets the following tool call surface.
+			body.Include = []string{"reasoning.encrypted_content"}
+		}
 	}
 	for _, message := range req.Messages {
 		switch message.Role {
@@ -222,16 +231,25 @@ func (r *Responses) Complete(ctx context.Context, req Request) (*Response, error
 	if err != nil {
 		return nil, &Error{Provider: r.provider, Status: 503, Message: err.Error()}
 	}
-	// A streamed codex reply is SSE, not one JSON object. Collapse it to the
-	// final response object so all parsing below is identical to the
-	// non-streaming path. A non-200 arrives as a normal JSON body even when we
-	// asked for a stream, so only reduce on success.
+	// A streamed codex reply is SSE, and the tool call arrives as a sequence
+	// of function_call_arguments.delta events — it is not present, assembled,
+	// in any single JSON object. Project the event stream into a Response
+	// directly. A non-200 arrives as a normal JSON body even when we asked for
+	// a stream, so only project on success.
 	if body.Stream && resp.StatusCode == http.StatusOK {
-		final, ferr := finalResponseFromSSE(payload)
-		if ferr != nil {
-			return nil, &Error{Provider: r.provider, Status: 502, Message: ferr.Error()}
+		out, perr := projectResponsesStream(payload)
+		if perr != nil {
+			return nil, &Error{Provider: r.provider, Status: 502, Message: perr.Error()}
 		}
-		payload = final
+		out.Provider = r.provider
+		if out.ProviderState != nil {
+			out.ProviderState.Provider = r.provider
+		}
+		if out.Model == "" {
+			out.Model = r.model
+		}
+		out.RateLimit = parseRateLimitHeaders(resp.Header, r.provider)
+		return out, nil
 	}
 	var parsed responsesResponse
 	if err := json.Unmarshal(payload, &parsed); err != nil {
@@ -284,12 +302,29 @@ func (r *Responses) Complete(ctx context.Context, req Request) (*Response, error
 	return out, nil
 }
 
-// finalResponseFromSSE reduces a Responses SSE stream to its final response
-// object. The stream ends with a `response.completed` (or `response.failed`)
-// event whose `response` field is the same shape the non-streaming endpoint
-// returns, so extracting it lets the rest of Complete stay format-agnostic.
-func finalResponseFromSSE(payload []byte) ([]byte, error) {
-	var final []byte
+// projectResponsesStream assembles a Response from a Responses API SSE stream.
+//
+// The stream cannot be reduced to one JSON object: a tool call is delivered as
+// an output_item.added (with empty arguments) followed by a run of
+// function_call_arguments.delta events that must be concatenated. Text arrives
+// the same way via output_text.delta. The terminal response.completed event
+// carries usage and the fully-assembled output items, which are also used as
+// the opaque provider-state for replay.
+func projectResponsesStream(payload []byte) (*Response, error) {
+	out := &Response{StopReason: StopEndTurn}
+
+	// Tool calls, keyed by their streaming item id, with arguments accumulated
+	// across delta events. order preserves emission order for a stable result.
+	type pendingCall struct {
+		callID, name string
+		args         strings.Builder
+	}
+	calls := map[string]*pendingCall{}
+	var order []string
+
+	var completedOutput json.RawMessage
+	sawTerminal := false
+
 	for _, line := range bytes.Split(payload, []byte("\n")) {
 		line = bytes.TrimSpace(line)
 		data, ok := bytes.CutPrefix(line, []byte("data:"))
@@ -300,25 +335,89 @@ func finalResponseFromSSE(payload []byte) ([]byte, error) {
 		if len(data) == 0 || bytes.Equal(data, []byte("[DONE]")) {
 			continue
 		}
-		var event struct {
-			Type     string          `json:"type"`
-			Response json.RawMessage `json:"response"`
+
+		var ev struct {
+			Type   string `json:"type"`
+			ItemID string `json:"item_id"`
+			Delta  string `json:"delta"`
+			Item   struct {
+				ID     string `json:"id"`
+				Type   string `json:"type"`
+				CallID string `json:"call_id"`
+				Name   string `json:"name"`
+			} `json:"item"`
+			Response struct {
+				Status string          `json:"status"`
+				Output json.RawMessage `json:"output"`
+				Error  *struct {
+					Message string `json:"message"`
+				} `json:"error"`
+				Usage struct {
+					InputTokens        int `json:"input_tokens"`
+					OutputTokens       int `json:"output_tokens"`
+					InputTokensDetails struct {
+						CachedTokens int `json:"cached_tokens"`
+					} `json:"input_tokens_details"`
+				} `json:"usage"`
+			} `json:"response"`
 		}
-		if json.Unmarshal(data, &event) != nil {
+		if json.Unmarshal(data, &ev) != nil {
 			continue
 		}
-		// completed and failed both carry the terminal response object; keep
-		// the last one seen so a trailing failed event wins over an earlier
-		// in-progress snapshot.
-		if len(event.Response) > 0 &&
-			(strings.HasSuffix(event.Type, ".completed") || strings.HasSuffix(event.Type, ".failed")) {
-			final = event.Response
+
+		switch ev.Type {
+		case "response.output_item.added":
+			if ev.Item.Type == "function_call" {
+				if _, seen := calls[ev.Item.ID]; !seen {
+					order = append(order, ev.Item.ID)
+				}
+				calls[ev.Item.ID] = &pendingCall{callID: ev.Item.CallID, name: ev.Item.Name}
+			}
+		case "response.function_call_arguments.delta":
+			if c := calls[ev.ItemID]; c != nil {
+				c.args.WriteString(ev.Delta)
+			}
+		case "response.output_text.delta":
+			out.Text += ev.Delta
+		case "response.completed", "response.failed", "response.incomplete":
+			sawTerminal = true
+			completedOutput = ev.Response.Output
+			out.Usage = Usage{
+				Input:  ev.Response.Usage.InputTokens,
+				Output: ev.Response.Usage.OutputTokens,
+				Cached: ev.Response.Usage.InputTokensDetails.CachedTokens,
+			}
+			if ev.Type == "response.failed" && ev.Response.Error != nil {
+				return nil, fmt.Errorf("codex stream failed: %s", ev.Response.Error.Message)
+			}
+			if ev.Response.Status == "incomplete" {
+				out.StopReason = StopLength
+			}
 		}
 	}
-	if len(final) == 0 {
+
+	if !sawTerminal {
 		return nil, fmt.Errorf("no terminal response event in codex stream")
 	}
-	return final, nil
+
+	for _, id := range order {
+		c := calls[id]
+		args := c.args.String()
+		if strings.TrimSpace(args) == "" {
+			args = "{}"
+		}
+		out.ToolCalls = append(out.ToolCalls, ToolCall{ID: c.callID, Name: c.name, Input: json.RawMessage(args)})
+	}
+	if len(out.ToolCalls) > 0 {
+		out.StopReason = StopToolUse
+	}
+
+	// The completed event's output array is the opaque state to replay on the
+	// next turn (it carries the encrypted reasoning items codex requires back).
+	if len(completedOutput) > 0 {
+		out.ProviderState = &ProviderState{Kind: "responses_output", Data: completedOutput}
+	}
+	return out, nil
 }
 
 func setCodexHeaders(req *http.Request, token string) {
