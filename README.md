@@ -94,7 +94,7 @@ api_key_env = "OPENAI_API_KEY"
 # allowed_users = [123456789]    # required and non-empty; no open gateway
 ```
 
-**Toolsets:** `tracker` (SQLite read/write), `file` (scoped notes),
+**Toolsets:** `db` (SQLite read/write), `file` (scoped notes),
 `skills` (markdown procedures), `web` (fetch + optional search). `web` search
 plugs into a self-hosted SearXNG when `search_url` is set.
 
