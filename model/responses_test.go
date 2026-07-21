@@ -55,6 +55,19 @@ func TestResponsesCodexRequestAndToolCall(t *testing.T) {
 		if body["instructions"] != "stable system" || body["store"] != false {
 			t.Fatalf("body = %#v", body)
 		}
+		// Every function tool must carry a strict field. Without it the codex
+		// backend silently ignores the tool and the model never calls it.
+		sentTools, ok := body["tools"].([]any)
+		if !ok || len(sentTools) != 1 {
+			t.Fatalf("tools = %#v", body["tools"])
+		}
+		toolObj := sentTools[0].(map[string]any)
+		if _, present := toolObj["strict"]; !present {
+			t.Fatalf("function tool must include strict, got %#v", toolObj)
+		}
+		if toolObj["parameters"] == nil {
+			t.Fatalf("function tool must include parameters, got %#v", toolObj)
+		}
 		// codex rejects non-streaming requests with 400, so the transport must
 		// set stream and ask for SSE.
 		if body["stream"] != true {

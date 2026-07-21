@@ -87,8 +87,12 @@ type responsesInput struct {
 type responsesTool struct {
 	Type        string         `json:"type"`
 	Name        string         `json:"name"`
-	Description string         `json:"description,omitempty"`
-	Parameters  map[string]any `json:"parameters"`
+	Description string         `json:"description"`
+	// Strict must be present. The codex Responses backend silently ignores a
+	// function tool that omits it — the model then never sees a callable tool
+	// and replies with plain text and no tool call.
+	Strict     bool           `json:"strict"`
+	Parameters map[string]any `json:"parameters"`
 }
 
 type responsesResponse struct {
@@ -173,8 +177,15 @@ func (r *Responses) Complete(ctx context.Context, req Request) (*Response, error
 		}
 	}
 	for _, tool := range req.Tools {
+		params := tool.Schema
+		if params == nil {
+			// The backend rejects a null parameters field; an empty object
+			// schema is the valid "no arguments" shape.
+			params = map[string]any{"type": "object", "properties": map[string]any{}}
+		}
 		body.Tools = append(body.Tools, responsesTool{
-			Type: "function", Name: tool.Name, Description: tool.Description, Parameters: tool.Schema,
+			Type: "function", Name: tool.Name, Description: tool.Description,
+			Strict: false, Parameters: params,
 		})
 	}
 	if len(body.Tools) > 0 {

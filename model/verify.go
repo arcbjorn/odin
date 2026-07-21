@@ -73,7 +73,12 @@ func VerifyProvider(ctx context.Context, provider Provider) (*Verification, erro
 		return result, fmt.Errorf("tool-call turn: %w", err)
 	}
 	if len(first.ToolCalls) != 1 || first.ToolCalls[0].Name != tool.Name {
-		return result, fmt.Errorf("tool-call turn: expected one %s call, got %d", tool.Name, len(first.ToolCalls))
+		// Include what the model returned instead: a prose reply means it
+		// declined the tool (behavior), while an empty reply with no calls
+		// points at the tool not reaching the model (transport shape).
+		return result, fmt.Errorf(
+			"tool-call turn: expected one %s call, got %d (stop=%s, text=%q)",
+			tool.Name, len(first.ToolCalls), first.StopReason, truncate(first.Text, 200))
 	}
 	var args struct {
 		Token string `json:"token"`
