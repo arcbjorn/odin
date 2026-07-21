@@ -1,0 +1,14 @@
+/odin
+*.tmp
+.auth-*
+auth/
+*.db
+*.db-wal
+*.db-shm
+
+# generated state and local artifacts
+examples/profiles/*/state/
+examples/profiles/*/notes/
+examples/profiles/*/auth/
+examples/profiles/*/tracker.db-shm
+examples/profiles/*/tracker.db-wal
