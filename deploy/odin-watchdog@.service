@@ -1,0 +1,36 @@
+# One-shot watchdog check. Driven by odin-watchdog@%i.timer.
+#
+# Runs as root, not as the agent user, and deliberately so: if the agent's
+# user, its profile permissions, or its unit are broken, a watchdog running
+# under that same user would be broken too. The point of this process is to
+# survive the failure it reports.
+
+[Unit]
+Description=Odin watchdog check (%i profile)
+After=network-online.target
+
+[Service]
+Type=oneshot
+
+# Its own credentials file, separate from the agent's. A watchdog that cannot
+# alert because the agent's env file is malformed is not a watchdog.
+EnvironmentFile=/var/lib/odin-watchdog/telegram.env
+
+ExecStart=/usr/local/bin/odin-watchdog \
+  --profile-dir /var/lib/odin/profiles/%i \
+  --state-dir /var/lib/odin-watchdog
+
+# Reads the agent's state, writes only its own.
+ProtectSystem=strict
+ReadOnlyPaths=/var/lib/odin/profiles/%i
+ReadWritePaths=/var/lib/odin-watchdog
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+
+# A watchdog that hangs is the same as no watchdog.
+TimeoutStartSec=90s
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=odin-watchdog-%i

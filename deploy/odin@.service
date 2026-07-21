@@ -1,0 +1,61 @@
+# Odin personal agent, one instance per profile:
+#   systemctl enable --now odin@personal
+#
+# Deployment is a copy, not an install:
+#   GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o odin ./cmd/odin
+#   scp odin server:/usr/local/bin/odin
+#
+# The binary is static, so there is no venv to own, no interpreter to match,
+# and no lazy-installed backend that resolves differently for the service user
+# than it did for root.
+
+[Unit]
+Description=Odin agent (%i profile)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=odin-%i
+Group=odin-%i
+
+# Secrets live here, 0600 and owned by the service user. They are never in
+# config.toml, which is in git.
+EnvironmentFile=/var/lib/odin/%i.env
+
+Environment=ODIN_ROOT=/var/lib/odin
+ExecStart=/usr/local/bin/odin run --profile %i
+
+# Supervision is what systemd is genuinely good at. Scheduling is not: the
+# tracker's timezone is switchable live for travel, and a systemd timer would
+# keep firing on host time. Odin owns its own clock; systemd only keeps the
+# process alive.
+Restart=always
+RestartSec=10s
+
+# The agent needs its own profile directory and nothing else on the box.
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/odin/profiles/%i
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+# A runaway generation should hit a wall rather than take the host down.
+MemoryMax=1G
+TasksMax=64
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=odin-%i
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,16 @@
+# Runs the watchdog every 30 minutes for one profile:
+#   systemctl enable --now odin-watchdog@personal.timer
+
+[Unit]
+Description=Odin watchdog (%i profile)
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=30min
+# Spread the check so it does not land exactly on a job boundary and race a
+# run that is legitimately in progress.
+RandomizedDelaySec=120
+Persistent=true
+
+[Install]
+WantedBy=timers.target
