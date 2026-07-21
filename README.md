@@ -96,16 +96,33 @@ never touch a log.
 
 ## Deploy
 
-`odin run` is a long-lived process — put it under any supervisor (systemd,
-a container, etc.). It owns its own schedule internally, so the supervisor
-only needs to keep it alive and restart on exit:
+`odin run` is a long-lived process — put it under any supervisor. It owns its
+own schedule internally, so the supervisor only needs to keep it alive.
+`deploy/` holds ready systemd templates (one instance per profile):
 
-```ini
-[Service]
-ExecStart=/usr/local/bin/odin run --root /var/lib/odin --profile default
-EnvironmentFile=/var/lib/odin/default.env
-Restart=always
+```sh
+cp odin odin-watchdog /usr/local/bin/
+cp deploy/*.service deploy/*.timer /etc/systemd/system/
+systemctl enable --now odin@default            # the agent
+systemctl enable --now odin-watchdog@default.timer   # optional, see below
 ```
+
+### Watchdog
+
+The agent's scheduler runs *inside* `odin run`, so it can't report that the
+process itself has died. `odin-watchdog` is a separate one-shot binary,
+triggered from outside, that reads the scheduler's state file and alerts over
+Telegram when a job is silently overdue or failing. Because a scheduler cannot
+announce its own crash, the trigger must live outside the agent — a systemd
+timer or a cron line:
+
+```cron
+# every 30 min: check the agent is running its jobs, alert if not
+*/30 * * * * TELEGRAM_TOKEN=... TELEGRAM_CHAT_ID=... \
+  odin-watchdog --profile-dir /var/lib/odin/profiles/default
+```
+
+Healthy is silent — it only speaks when something is wrong.
 
 ## License
 
