@@ -445,7 +445,7 @@ func TestOpenCodeAPIModeRouting(t *testing.T) {
 		}
 	}
 	zen := map[string]string{
-		"gpt-5.4": "responses", "claude-opus-4-8": "anthropic_messages", "gemini-3-pro": "chat_completions",
+		"gpt-5.6-terra": "responses", "claude-opus-4-8": "anthropic_messages", "gemini-3-pro": "chat_completions",
 	}
 	for modelName, want := range zen {
 		got := providerAPIMode(ProviderConfig{Name: "opencode-zen", Kind: "openai", Model: modelName})

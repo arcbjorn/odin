@@ -123,12 +123,18 @@ max_turns = 20
 max_tokens = 4096
 effort = "high"
 
+# Set model to whatever your key can call. gpt-5.6-terra is the balanced
+# intelligence/cost tier; gpt-5.6-sol and gpt-5.6-luna are the frontier and
+# high-volume tiers. Verify the current id at platform.openai.com/docs/models.
 [[providers]]
 kind = "openai"
 name = "openai"
-model = "gpt-5.4"
+model = "gpt-5.6-terra"
 base_url = "https://api.openai.com/v1"
 api_key_env = "OPENAI_API_KEY"
+
+# Add a second provider to make the chain a fallback chain. The first is
+# primary; every call restarts from it, so a recovered primary is used again.
 
 # Optional Telegram gateway. Replace the placeholder before enabling it.
 # [telegram]
