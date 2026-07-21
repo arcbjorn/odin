@@ -1,5 +1,7 @@
 # odin
 
+![Odin banner](assets/odin-banner.png)
+
 A lean, single-binary personal agent. Runs scheduled jobs and a Telegram chat
 gateway against your own model providers — including plan/subscription auth,
 not just metered API keys.
