@@ -1,20 +1,30 @@
 ![Odin banner](assets/odin-banner.png)
 
-A lean, single-binary personal agent. Runs scheduled jobs and a Telegram chat
-gateway against your own model providers — including plan/subscription auth,
-not just metered API keys.
+A lean, single-binary personal agent that runs scheduled jobs and a Telegram
+chat gateway against your own model providers — including plan/subscription
+auth, not just metered API keys.
+
+A robust, stable alternative to [OpenClaw](https://github.com/openclaw/openclaw)
+and [Hermes](https://github.com/NousResearch/hermes-agent): one static binary
+instead of a Node/Python service tree, an explicit tool allowlist instead of an
+ever-growing surface, and a scheduler that can't pollute the model's context.
 
 - **One static binary.** `CGO_ENABLED=0 go build` → `scp` → run. No runtime, no
-  venv, no dependencies on the host.
+  venv, no dependency tree that resolves differently on the server than it did
+  in dev.
 - **Provider fallback chain.** Try providers in order; every call restarts from
   the primary, so a recovered primary is used again instead of sticking on a
   fallback.
 - **Profiles.** Each agent is a directory (persona, tools, jobs, SQLite state).
   A tool absent from the allowlist is never constructed — it cannot be called.
-- **In-process scheduler.** Cron jobs fire on the tracker's own timezone
-  (switchable live), so a timezone change moves every job. No `cron` in the DB.
+- **In-process scheduler.** Cron jobs fire on the database's own timezone
+  (switchable live), so a timezone change moves every job. No `cron` in the DB,
+  no per-job model snapshots to drift out of sync.
 - **Guardrails.** A repeated failing tool call is stopped after 3 attempts, not
   looped. Tool schemas are capped small so weaker models can fill them.
+- **No context pollution.** The system prompt is assembled once and stays
+  byte-identical across turns (so provider caches actually hit); scheduled jobs
+  run in isolation and never leak yesterday's state into today's prompt.
 
 ## Install
 
@@ -123,6 +133,27 @@ timer or a cron line:
 ```
 
 Healthy is silent — it only speaks when something is wrong.
+
+## Prior art
+
+Odin is inspired by [OpenClaw](https://github.com/openclaw/openclaw) and
+[Hermes](https://github.com/NousResearch/hermes-agent), and owes both a debt —
+the config-driven `SOUL.md` persona, the multi-platform gateway idea, and the
+skills-as-markdown concept all came from that lineage.
+
+It's a deliberate reaction to running them at scale. Both are capable but
+sprawling — large, always-on services (Node and Python respectively) supporting
+dozens of platforms and providers, where deployment friction and silent failures
+accumulate: a scheduler whose per-job state drifts out of sync with the global
+config, a growing tool surface where a capability is disabled-by-config rather
+than absent, credential and packaging setup that resolves differently on the
+server than in dev. Odin keeps the good ideas and drops the rest: one static
+binary, an explicit allowlist, jobs as files, a scheduler that owns its own
+clock, and a deliberately dumb external watchdog for the one thing an in-process
+scheduler can't catch — its own death.
+
+If you want a batteries-included, many-platform agent, use those. If you want a
+small one you can read end to end and deploy with `scp`, use this.
 
 ## License
 
