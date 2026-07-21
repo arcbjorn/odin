@@ -1,8 +1,8 @@
 ![Odin banner](assets/odin-banner.png)
 
-A lean, single-binary personal agent that runs scheduled jobs and a Telegram
-chat gateway against your own model providers — including plan/subscription
-auth, not just metered API keys.
+A lean, single-binary agent runtime. Define a persona, give it tools, put it on
+a schedule, and reach it over Telegram — running against your own model
+providers, including plan/subscription auth, not just metered API keys.
 
 A robust, stable alternative to [OpenClaw](https://github.com/openclaw/openclaw)
 and [Hermes](https://github.com/NousResearch/hermes-agent): one static binary
