@@ -8,7 +8,7 @@ import (
 	"log/slog"
 	"testing"
 
-	"odin/model"
+	"github.com/arcbjorn/odin/model"
 )
 
 // scriptedProvider replays a fixed sequence of responses, then repeats the

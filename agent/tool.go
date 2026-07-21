@@ -8,7 +8,7 @@ import (
 	"sort"
 	"sync"
 
-	"odin/model"
+	"github.com/arcbjorn/odin/model"
 )
 
 // Handler executes one tool call. Input is the raw JSON the model produced;

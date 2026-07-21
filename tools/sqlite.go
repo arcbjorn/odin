@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"odin/agent"
-	"odin/model"
+	"github.com/arcbjorn/odin/agent"
+	"github.com/arcbjorn/odin/model"
 )
 
 // maxRows caps result size. A runaway SELECT would otherwise blow the context

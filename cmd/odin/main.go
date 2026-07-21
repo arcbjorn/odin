@@ -25,12 +25,12 @@ import (
 	"syscall"
 	"time"
 
-	"odin/agent"
-	"odin/gateway"
-	"odin/jobs"
-	"odin/model"
-	"odin/profile"
-	"odin/sched"
+	"github.com/arcbjorn/odin/agent"
+	"github.com/arcbjorn/odin/gateway"
+	"github.com/arcbjorn/odin/jobs"
+	"github.com/arcbjorn/odin/model"
+	"github.com/arcbjorn/odin/profile"
+	"github.com/arcbjorn/odin/sched"
 )
 
 func main() {

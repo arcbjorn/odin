@@ -22,7 +22,7 @@ import (
 	"strconv"
 	"strings"
 
-	"odin/sched"
+	"github.com/arcbjorn/odin/sched"
 )
 
 // Set is a profile's loaded jobs.

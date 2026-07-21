@@ -1,4 +1,4 @@
-module odin
+module github.com/arcbjorn/odin
 
 go 1.25.0
 

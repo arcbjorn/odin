@@ -50,7 +50,7 @@ func NewSubscriptionSource(subscription, path string) (TokenSource, error) {
 	case "codex":
 		return NewOAuthSource(OAuthConfig{
 			Path: path, ClientID: codexClientID, TokenURL: codexTokenURL,
-			Headers: map[string]string{"Accept": "application/json", "User-Agent": "odin/1"},
+			Headers: map[string]string{"Accept": "application/json", "User-Agent": "github.com/arcbjorn/odin/1"},
 		}), nil
 	case "claude":
 		return NewOAuthSource(OAuthConfig{
@@ -149,7 +149,7 @@ func loginCodex(ctx context.Context, path string, prompt func(string, string)) e
 		"redirect_uri": {"https://auth.openai.com/deviceauth/callback"},
 		"client_id":    {codexClientID}, "code_verifier": {exchange.CodeVerifier},
 	}
-	tok, err := exchangeToken(ctx, client, codexTokenURL, form, map[string]string{"User-Agent": "odin/1"})
+	tok, err := exchangeToken(ctx, client, codexTokenURL, form, map[string]string{"User-Agent": "github.com/arcbjorn/odin/1"})
 	if err != nil {
 		return fmt.Errorf("exchange Codex authorization: %w", err)
 	}

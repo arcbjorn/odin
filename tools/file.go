@@ -9,8 +9,8 @@ import (
 	"sort"
 	"strings"
 
-	"odin/agent"
-	"odin/model"
+	"github.com/arcbjorn/odin/agent"
+	"github.com/arcbjorn/odin/model"
 )
 
 const (

@@ -12,7 +12,7 @@ import (
 	"testing"
 
 	_ "modernc.org/sqlite"
-	"odin/model"
+	"github.com/arcbjorn/odin/model"
 )
 
 const minimalConfig = `

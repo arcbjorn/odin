@@ -19,8 +19,9 @@ not just metered API keys.
 ## Install
 
 ```sh
-git clone https://github.com/arcbjorn/odin && cd odin
-go build ./cmd/odin
+go install github.com/arcbjorn/odin/cmd/odin@latest
+# or from source:
+git clone https://github.com/arcbjorn/odin && cd odin && go build ./cmd/odin
 ```
 
 Cross-compile for a server:

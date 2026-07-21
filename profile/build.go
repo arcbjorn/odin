@@ -9,9 +9,9 @@ import (
 	"os/exec"
 	"strings"
 
-	"odin/agent"
-	"odin/model"
-	"odin/tools"
+	"github.com/arcbjorn/odin/agent"
+	"github.com/arcbjorn/odin/model"
+	"github.com/arcbjorn/odin/tools"
 )
 
 // Runtime is a profile assembled into live components.
@@ -241,7 +241,7 @@ func buildProvider(p *Profile, log *slog.Logger) (model.Provider, error) {
 				dropEffort = true
 			}
 			if pc.Subscription == "kimi" {
-				headers = map[string]string{"User-Agent": "odin/1"}
+				headers = map[string]string{"User-Agent": "github.com/arcbjorn/odin/1"}
 			}
 			provider = model.NewOpenAI(model.OpenAIConfig{
 				Provider:   pc.Name,

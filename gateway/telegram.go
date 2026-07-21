@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"odin/model"
+	"github.com/arcbjorn/odin/model"
 )
 
 const telegramAPI = "https://api.telegram.org"

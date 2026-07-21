@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 
-	"odin/model"
+	"github.com/arcbjorn/odin/model"
 )
 
 // Defaults for Config. Stopping with a clear blocker is safer than looping.

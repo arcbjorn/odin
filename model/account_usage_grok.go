@@ -32,7 +32,7 @@ func (p *AccountUsageProvider) grokUsage(ctx context.Context) (*AccountUsage, er
 		req.Header.Set("Content-Type", "application/grpc-web+proto")
 		req.Header.Set("x-grpc-web", "1")
 		req.Header.Set("x-user-agent", "connect-es/2.1.1")
-		req.Header.Set("User-Agent", "odin/1")
+		req.Header.Set("User-Agent", "github.com/arcbjorn/odin/1")
 		return req, nil
 	})
 	if err != nil {

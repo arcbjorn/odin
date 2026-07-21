@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"odin/model"
+	"github.com/arcbjorn/odin/model"
 )
 
 func quiet() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
