@@ -40,7 +40,10 @@ func VerifyProvider(ctx context.Context, provider Provider) (*Verification, erro
 				}
 			}
 			if !found {
-				return result, fmt.Errorf("configured model %q is absent from the live catalog", modelName)
+				// Name the real options so a stale model id is a one-line fix,
+				// not a round-trip through `odin models`.
+				return result, fmt.Errorf("configured model %q is absent from the live catalog; available: %s",
+					modelName, strings.Join(suggestModels(models), ", "))
 			}
 		}
 	}
@@ -104,6 +107,16 @@ func VerifyProvider(ctx context.Context, provider Provider) (*Verification, erro
 	}
 	result.Continuation = true
 	return result, nil
+}
+
+// suggestModels caps the catalog list so the error stays readable when a
+// provider exposes dozens of models.
+func suggestModels(models []string) []string {
+	const max = 12
+	if len(models) <= max {
+		return models
+	}
+	return append(models[:max:max], "...")
 }
 
 func makeVerifyToken() string {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -50,8 +51,14 @@ func TestVerifyProviderChecksToolContinuation(t *testing.T) {
 
 func TestVerifyProviderRejectsMissingModel(t *testing.T) {
 	provider := &missingCatalogProvider{verifyProvider: verifyProvider{}}
-	if _, err := VerifyProvider(context.Background(), provider); err == nil {
+	_, err := VerifyProvider(context.Background(), provider)
+	if err == nil {
 		t.Fatal("expected missing configured model to fail")
+	}
+	// A stale model id should be a one-line fix: the error must name the real
+	// options, not just say the configured one is wrong.
+	if !strings.Contains(err.Error(), "other") {
+		t.Fatalf("error should list available models, got: %v", err)
 	}
 }
 
