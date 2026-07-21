@@ -129,12 +129,17 @@ func appendResponsesInput(input []json.RawMessage, item responsesInput) []json.R
 
 func (r *Responses) Complete(ctx context.Context, req Request) (*Response, error) {
 	body := responsesRequest{
-		Model:           r.model,
-		Instructions:    req.System,
-		MaxOutputTokens: req.MaxTokens,
-		Store:           false,
+		Model:        r.model,
+		Instructions: req.System,
+		Store:        false,
 		// The codex backend refuses non-streaming requests; xAI accepts them.
 		Stream: r.codex,
+	}
+	// The codex proxy rejects max_output_tokens with 400 "Unsupported
+	// parameter"; the standard Responses API accepts it. Send it everywhere
+	// except codex.
+	if !r.codex {
+		body.MaxOutputTokens = req.MaxTokens
 	}
 	if req.Effort != "" && !r.xai {
 		body.Reasoning = &responsesReasoning{Effort: req.Effort}

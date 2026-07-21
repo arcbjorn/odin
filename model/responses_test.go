@@ -60,6 +60,10 @@ func TestResponsesCodexRequestAndToolCall(t *testing.T) {
 		if body["stream"] != true {
 			t.Fatalf("codex request must set stream=true, got %#v", body["stream"])
 		}
+		// The codex proxy rejects max_output_tokens with a 400.
+		if _, present := body["max_output_tokens"]; present {
+			t.Fatalf("codex request must omit max_output_tokens, got %#v", body["max_output_tokens"])
+		}
 		if got := req.Header.Get("Accept"); got != "text/event-stream" {
 			t.Fatalf("Accept = %q, want text/event-stream", got)
 		}
@@ -77,7 +81,8 @@ func TestResponsesCodexRequestAndToolCall(t *testing.T) {
 
 	response, err := provider.Complete(context.Background(), Request{
 		System: "stable system", Messages: []Message{{Role: RoleUser, Content: "go"}},
-		Tools: []Tool{{Name: "query", Schema: map[string]any{"type": "object"}}}, Effort: "high",
+		Tools: []Tool{{Name: "query", Schema: map[string]any{"type": "object"}}},
+		Effort: "high", MaxTokens: 4096, // must be dropped for codex
 	})
 	if err != nil {
 		t.Fatal(err)
