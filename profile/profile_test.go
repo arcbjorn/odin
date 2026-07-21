@@ -496,6 +496,11 @@ func TestXAIPlanUsesGrokBuildProxy(t *testing.T) {
 	if got := providerBaseURL(pc); got != "https://cli-chat-proxy.grok.com/v1" {
 		t.Fatalf("base URL = %q", got)
 	}
+	// The proxy 426s a request with no CLI version, so the version header the
+	// xai branch sends must never be blanked. See grokCLIVersion in build.go.
+	if grokCLIVersion == "" {
+		t.Fatal("grokCLIVersion is empty; xai requests will be rejected with 426")
+	}
 }
 
 func TestProviderUsageKind(t *testing.T) {
