@@ -63,6 +63,10 @@ type responsesRequest struct {
 	MaxOutputTokens   int                 `json:"max_output_tokens,omitempty"`
 	Reasoning         *responsesReasoning `json:"reasoning,omitempty"`
 	Store             bool                `json:"store"`
+	// Stream is required by the codex backend, which rejects non-streaming
+	// requests with 400 "Stream must be set to true". Other Responses hosts
+	// (xAI) accept a single JSON response, so this is set only for codex.
+	Stream bool `json:"stream,omitempty"`
 }
 
 type responsesReasoning struct {
@@ -129,6 +133,8 @@ func (r *Responses) Complete(ctx context.Context, req Request) (*Response, error
 		Instructions:    req.System,
 		MaxOutputTokens: req.MaxTokens,
 		Store:           false,
+		// The codex backend refuses non-streaming requests; xAI accepts them.
+		Stream: r.codex,
 	}
 	if req.Effort != "" && !r.xai {
 		body.Reasoning = &responsesReasoning{Effort: req.Effort}
@@ -183,6 +189,7 @@ func (r *Responses) Complete(ctx context.Context, req Request) (*Response, error
 		httpReq.Header.Set("Content-Type", "application/json")
 		httpReq.Header.Set("Authorization", "Bearer "+token)
 		if r.codex {
+			httpReq.Header.Set("Accept", "text/event-stream")
 			setCodexHeaders(httpReq, token)
 		}
 		return httpReq, nil
@@ -198,6 +205,17 @@ func (r *Responses) Complete(ctx context.Context, req Request) (*Response, error
 	payload, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 	if err != nil {
 		return nil, &Error{Provider: r.provider, Status: 503, Message: err.Error()}
+	}
+	// A streamed codex reply is SSE, not one JSON object. Collapse it to the
+	// final response object so all parsing below is identical to the
+	// non-streaming path. A non-200 arrives as a normal JSON body even when we
+	// asked for a stream, so only reduce on success.
+	if body.Stream && resp.StatusCode == http.StatusOK {
+		final, ferr := finalResponseFromSSE(payload)
+		if ferr != nil {
+			return nil, &Error{Provider: r.provider, Status: 502, Message: ferr.Error()}
+		}
+		payload = final
 	}
 	var parsed responsesResponse
 	if err := json.Unmarshal(payload, &parsed); err != nil {
@@ -248,6 +266,43 @@ func (r *Responses) Complete(ctx context.Context, req Request) (*Response, error
 		out.StopReason = StopLength
 	}
 	return out, nil
+}
+
+// finalResponseFromSSE reduces a Responses SSE stream to its final response
+// object. The stream ends with a `response.completed` (or `response.failed`)
+// event whose `response` field is the same shape the non-streaming endpoint
+// returns, so extracting it lets the rest of Complete stay format-agnostic.
+func finalResponseFromSSE(payload []byte) ([]byte, error) {
+	var final []byte
+	for _, line := range bytes.Split(payload, []byte("\n")) {
+		line = bytes.TrimSpace(line)
+		data, ok := bytes.CutPrefix(line, []byte("data:"))
+		if !ok {
+			continue
+		}
+		data = bytes.TrimSpace(data)
+		if len(data) == 0 || bytes.Equal(data, []byte("[DONE]")) {
+			continue
+		}
+		var event struct {
+			Type     string          `json:"type"`
+			Response json.RawMessage `json:"response"`
+		}
+		if json.Unmarshal(data, &event) != nil {
+			continue
+		}
+		// completed and failed both carry the terminal response object; keep
+		// the last one seen so a trailing failed event wins over an earlier
+		// in-progress snapshot.
+		if len(event.Response) > 0 &&
+			(strings.HasSuffix(event.Type, ".completed") || strings.HasSuffix(event.Type, ".failed")) {
+			final = event.Response
+		}
+	}
+	if len(final) == 0 {
+		return nil, fmt.Errorf("no terminal response event in codex stream")
+	}
+	return final, nil
 }
 
 func setCodexHeaders(req *http.Request, token string) {

@@ -22,6 +22,12 @@ func jsonResponse(status int, body string) *http.Response {
 	}
 }
 
+func sseResponse(status int, body string) *http.Response {
+	resp := jsonResponse(status, body)
+	resp.Header.Set("Content-Type", "text/event-stream")
+	return resp
+}
+
 func TestResponsesCodexRequestAndToolCall(t *testing.T) {
 	claims, _ := json.Marshal(map[string]any{
 		"https://api.openai.com/auth": map[string]any{"chatgpt_account_id": "acct-test"},
@@ -49,11 +55,24 @@ func TestResponsesCodexRequestAndToolCall(t *testing.T) {
 		if body["instructions"] != "stable system" || body["store"] != false {
 			t.Fatalf("body = %#v", body)
 		}
-		return jsonResponse(http.StatusOK, `{
-			"model":"gpt-5.5","status":"completed",
-			"output":[{"type":"function_call","call_id":"call-1","name":"query","arguments":"{\"sql\":\"select 1\"}"}],
-			"usage":{"input_tokens":12,"output_tokens":4,"input_tokens_details":{"cached_tokens":8}}
-		}`), nil
+		// codex rejects non-streaming requests with 400, so the transport must
+		// set stream and ask for SSE.
+		if body["stream"] != true {
+			t.Fatalf("codex request must set stream=true, got %#v", body["stream"])
+		}
+		if got := req.Header.Get("Accept"); got != "text/event-stream" {
+			t.Fatalf("Accept = %q, want text/event-stream", got)
+		}
+		// A realistic codex stream: an in-progress event, then the terminal
+		// completed event carrying the response object.
+		sse := "event: response.in_progress\n" +
+			`data: {"type":"response.in_progress","response":{"status":"in_progress","output":[]}}` + "\n\n" +
+			"event: response.completed\n" +
+			`data: {"type":"response.completed","response":{"model":"gpt-5.5","status":"completed",` +
+			`"output":[{"type":"function_call","call_id":"call-1","name":"query","arguments":"{\"sql\":\"select 1\"}"}],` +
+			`"usage":{"input_tokens":12,"output_tokens":4,"input_tokens_details":{"cached_tokens":8}}}}` + "\n\n" +
+			"data: [DONE]\n\n"
+		return sseResponse(http.StatusOK, sse), nil
 	})}
 
 	response, err := provider.Complete(context.Background(), Request{
@@ -68,6 +87,34 @@ func TestResponsesCodexRequestAndToolCall(t *testing.T) {
 	}
 	if response.Usage.Cached != 8 {
 		t.Fatalf("usage = %+v", response.Usage)
+	}
+}
+
+func TestFinalResponseFromSSE(t *testing.T) {
+	// The terminal completed event's response object is what downstream
+	// parsing expects — later events win over earlier snapshots.
+	stream := "data: {\"type\":\"response.in_progress\",\"response\":{\"status\":\"in_progress\"}}\n\n" +
+		"data: {\"type\":\"response.output_item.added\",\"item\":{}}\n\n" +
+		"data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"model\":\"gpt-5.5\"}}\n\n" +
+		"data: [DONE]\n\n"
+	out, err := finalResponseFromSSE([]byte(stream))
+	if err != nil {
+		t.Fatalf("reduce: %v", err)
+	}
+	var got struct{ Status, Model string }
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("unmarshal reduced response: %v", err)
+	}
+	if got.Status != "completed" || got.Model != "gpt-5.5" {
+		t.Fatalf("reduced to %+v", got)
+	}
+}
+
+func TestFinalResponseFromSSEWithoutTerminalEventErrors(t *testing.T) {
+	// A stream that never completes must not silently yield an empty response.
+	stream := "data: {\"type\":\"response.in_progress\",\"response\":{\"status\":\"in_progress\"}}\n\n"
+	if _, err := finalResponseFromSSE([]byte(stream)); err == nil {
+		t.Fatal("expected an error when no terminal event is present")
 	}
 }
 
@@ -94,9 +141,11 @@ func TestResponsesReplaysOpaqueOutput(t *testing.T) {
 			if !strings.Contains(joined, `"type":"reasoning"`) || !strings.Contains(joined, `"encrypted_content":"opaque"`) {
 				t.Fatalf("opaque response output was not replayed: %s", joined)
 			}
-			return jsonResponse(http.StatusOK, `{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"done"}]}]}`), nil
+			return sseResponse(http.StatusOK, "data: {\"type\":\"response.completed\",\"response\":"+
+				`{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"done"}]}]}}`+"\n\n"), nil
 		}
-		return jsonResponse(http.StatusOK, `{"status":"completed","output":[{"type":"reasoning","encrypted_content":"opaque"},{"type":"function_call","call_id":"c1","name":"query","arguments":"{}"}]}`), nil
+		return sseResponse(http.StatusOK, "data: {\"type\":\"response.completed\",\"response\":"+
+			`{"status":"completed","output":[{"type":"reasoning","encrypted_content":"opaque"},{"type":"function_call","call_id":"c1","name":"query","arguments":"{}"}]}}`+"\n\n"), nil
 	})}
 
 	first, err := provider.Complete(context.Background(), Request{Messages: []Message{{Role: RoleUser, Content: "go"}}})
