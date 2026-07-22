@@ -945,8 +945,9 @@ func buildScheduler(rt *profile.Runtime, tg *gateway.Telegram, log *slog.Logger)
 				return err
 			}
 			if strings.TrimSpace(text) == "" {
-				// A job that decided there was nothing to say is a success,
-				// not a failure — the night guard does this by design.
+				// A job that decided there was nothing to say is a success, not
+				// a failure — a conditional job that finds no work to report
+				// should stay silent rather than send an empty message.
 				log.Info("job produced no message", "job", job.Name)
 				return nil
 			}

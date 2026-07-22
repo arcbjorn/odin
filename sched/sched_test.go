@@ -47,22 +47,22 @@ func TestNextRunTimes(t *testing.T) {
 		from time.Time
 		want time.Time
 	}{
-		{ // morning brief later today
+		{ // daily report later today
 			"0 7 * * *",
 			time.Date(2026, 7, 20, 6, 30, 0, 0, loc),
 			time.Date(2026, 7, 20, 7, 0, 0, 0, loc),
 		},
-		{ // morning brief rolls to tomorrow
+		{ // daily report rolls to tomorrow
 			"0 7 * * *",
 			time.Date(2026, 7, 20, 7, 30, 0, 0, loc),
 			time.Date(2026, 7, 21, 7, 0, 0, 0, loc),
 		},
-		{ // evening close
+		{ // nightly job
 			"30 21 * * *",
 			time.Date(2026, 7, 20, 12, 0, 0, 0, loc),
 			time.Date(2026, 7, 20, 21, 30, 0, 0, loc),
 		},
-		{ // weekly debrief: Monday -> the coming Sunday
+		{ // weekly job: Monday -> the coming Sunday
 			"0 18 * * 0",
 			time.Date(2026, 7, 20, 12, 0, 0, 0, loc), // 2026-07-20 is a Monday
 			time.Date(2026, 7, 26, 18, 0, 0, 0, loc),
@@ -270,7 +270,7 @@ func TestSchedulerFiresDueJob(t *testing.T) {
 		Jitter:   time.Nanosecond,
 		now:      clock.now,
 		Jobs: []Job{{
-			Name: "Morning brief", Schedule: mustParse(t, "0 7 * * *"),
+			Name: "Daily report", Schedule: mustParse(t, "0 7 * * *"),
 			Prompt: "brief", Enabled: true,
 		}},
 		Runner: func(_ context.Context, job Job) error {
@@ -320,7 +320,7 @@ func TestSchedulerDoesNotDoubleFire(t *testing.T) {
 	s, err := New(Config{
 		Location: loc, Logger: quiet(), Jitter: time.Nanosecond, now: clock.now,
 		Jobs: []Job{{
-			Name: "Morning brief", Schedule: mustParse(t, "0 7 * * *"),
+			Name: "Daily report", Schedule: mustParse(t, "0 7 * * *"),
 			Prompt: "brief", Enabled: true,
 		}},
 		Runner: func(context.Context, Job) error {
@@ -334,7 +334,7 @@ func TestSchedulerDoesNotDoubleFire(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	// New() computed next as tomorrow 07:00; force today's window.
-	s.nextRun["Morning brief"] = time.Date(2026, 7, 20, 7, 0, 0, 0, loc)
+	s.nextRun["Daily report"] = time.Date(2026, 7, 20, 7, 0, 0, 0, loc)
 
 	ctx := context.Background()
 	for i := 0; i < 5; i++ {
@@ -350,7 +350,7 @@ func TestSchedulerDoesNotDoubleFire(t *testing.T) {
 	}
 }
 
-// Firing a 07:00 morning brief at 15:00 is worse than skipping it: the content
+// Firing a 07:00 daily report at 15:00 is worse than skipping it: the content
 // is wrong and it reads as the system being confused.
 func TestStaleRunIsSkipped(t *testing.T) {
 	loc := time.UTC
@@ -362,7 +362,7 @@ func TestStaleRunIsSkipped(t *testing.T) {
 	s, err := New(Config{
 		Location: loc, Logger: quiet(), Jitter: time.Nanosecond, now: clock.now,
 		Jobs: []Job{{
-			Name: "Morning brief", Schedule: mustParse(t, "0 7 * * *"),
+			Name: "Daily report", Schedule: mustParse(t, "0 7 * * *"),
 			Prompt: "brief", Enabled: true,
 		}},
 		Runner: func(context.Context, Job) error {
@@ -376,7 +376,7 @@ func TestStaleRunIsSkipped(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	// Simulate the process having been down since 07:00.
-	s.nextRun["Morning brief"] = time.Date(2026, 7, 20, 7, 0, 0, 0, loc)
+	s.nextRun["Daily report"] = time.Date(2026, 7, 20, 7, 0, 0, 0, loc)
 
 	s.tick(context.Background())
 	time.Sleep(100 * time.Millisecond)
@@ -384,7 +384,7 @@ func TestStaleRunIsSkipped(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	if fired {
-		t.Fatal("an 8-hour-late morning brief should be skipped, not fired")
+		t.Fatal("an 8-hour-late daily report should be skipped, not fired")
 	}
 
 	// The skip must be recorded for status reporting.
@@ -401,7 +401,7 @@ func TestDisabledJobNeverFires(t *testing.T) {
 	s, err := New(Config{
 		Location: loc, Logger: quiet(), Jitter: time.Nanosecond, now: clock.now,
 		Jobs: []Job{{
-			Name: "Morning brief", Schedule: mustParse(t, "0 7 * * *"),
+			Name: "Daily report", Schedule: mustParse(t, "0 7 * * *"),
 			Prompt: "brief", Enabled: false,
 		}},
 		Runner: func(context.Context, Job) error {
@@ -427,7 +427,7 @@ func TestFailedRunIsRecordedAndLoopContinues(t *testing.T) {
 		Location: loc, Logger: quiet(), Jitter: time.Nanosecond, now: clock.now,
 		StatePath: state,
 		Jobs: []Job{{
-			Name: "Morning brief", Schedule: mustParse(t, "0 7 * * *"),
+			Name: "Daily report", Schedule: mustParse(t, "0 7 * * *"),
 			Prompt: "brief", Enabled: true,
 		}},
 		Runner: func(context.Context, Job) error {
@@ -437,7 +437,7 @@ func TestFailedRunIsRecordedAndLoopContinues(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	s.nextRun["Morning brief"] = time.Date(2026, 7, 20, 7, 0, 0, 0, loc)
+	s.nextRun["Daily report"] = time.Date(2026, 7, 20, 7, 0, 0, 0, loc)
 
 	s.tick(context.Background())
 	time.Sleep(150 * time.Millisecond)
@@ -463,7 +463,7 @@ func TestPanicInJobIsContained(t *testing.T) {
 	s, err := New(Config{
 		Location: loc, Logger: quiet(), Jitter: time.Nanosecond, now: clock.now,
 		Jobs: []Job{{
-			Name: "Morning brief", Schedule: mustParse(t, "0 7 * * *"),
+			Name: "Daily report", Schedule: mustParse(t, "0 7 * * *"),
 			Prompt: "brief", Enabled: true,
 		}},
 		Runner: func(context.Context, Job) error { panic("boom") },
@@ -471,7 +471,7 @@ func TestPanicInJobIsContained(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	s.nextRun["Morning brief"] = time.Date(2026, 7, 20, 7, 0, 0, 0, loc)
+	s.nextRun["Daily report"] = time.Date(2026, 7, 20, 7, 0, 0, 0, loc)
 
 	s.tick(context.Background())
 	time.Sleep(150 * time.Millisecond)
@@ -488,7 +488,7 @@ func TestStateSurvivesRestart(t *testing.T) {
 	clock := &fakeClock{t: time.Date(2026, 7, 20, 7, 0, 10, 0, loc)}
 
 	jobs := []Job{{
-		Name: "Morning brief", Schedule: mustParse(t, "0 7 * * *"),
+		Name: "Daily report", Schedule: mustParse(t, "0 7 * * *"),
 		Prompt: "brief", Enabled: true,
 	}}
 
@@ -500,7 +500,7 @@ func TestStateSurvivesRestart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	first.nextRun["Morning brief"] = time.Date(2026, 7, 20, 7, 0, 0, 0, loc)
+	first.nextRun["Daily report"] = time.Date(2026, 7, 20, 7, 0, 0, 0, loc)
 	first.tick(context.Background())
 	time.Sleep(150 * time.Millisecond)
 
@@ -528,7 +528,7 @@ func TestCorruptStateDoesNotBlockStartup(t *testing.T) {
 	_, err := New(Config{
 		Location: time.UTC, Logger: quiet(), StatePath: state,
 		Jobs: []Job{{
-			Name: "Morning brief", Schedule: mustParse(t, "0 7 * * *"),
+			Name: "Daily report", Schedule: mustParse(t, "0 7 * * *"),
 			Prompt: "brief", Enabled: true,
 		}},
 		Runner: func(context.Context, Job) error { return nil },
@@ -565,14 +565,14 @@ func TestSchedulerValidation(t *testing.T) {
 func TestJitterIsStableAndBounded(t *testing.T) {
 	const max = 10 * time.Second
 
-	a1, a2 := jitterFor("Evening close", max), jitterFor("Evening close", max)
+	a1, a2 := jitterFor("Nightly summary", max), jitterFor("Nightly summary", max)
 	if a1 != a2 {
 		t.Fatalf("jitter is not stable: %v vs %v", a1, a2)
 	}
 	if a1 < 0 || a1 >= max {
 		t.Fatalf("jitter %v out of bounds", a1)
 	}
-	if jitterFor("Evening close", max) == jitterFor("Night guard", max) {
+	if jitterFor("Nightly summary", max) == jitterFor("Hourly check", max) {
 		t.Error("distinct jobs should get distinct jitter")
 	}
 }
@@ -581,9 +581,9 @@ func TestHealthReportsAllJobs(t *testing.T) {
 	s, err := New(Config{
 		Location: time.UTC, Logger: quiet(),
 		Jobs: []Job{
-			{Name: "Weekly debrief", Schedule: mustParse(t, "0 18 * * 0"), Prompt: "p", Enabled: true},
-			{Name: "Morning brief", Schedule: mustParse(t, "0 7 * * *"), Prompt: "p", Enabled: true},
-			{Name: "Night guard", Schedule: mustParse(t, "30 22 * * *"), Prompt: "p", Enabled: false},
+			{Name: "Weekly rollup", Schedule: mustParse(t, "0 18 * * 0"), Prompt: "p", Enabled: true},
+			{Name: "Daily report", Schedule: mustParse(t, "0 7 * * *"), Prompt: "p", Enabled: true},
+			{Name: "Hourly check", Schedule: mustParse(t, "30 22 * * *"), Prompt: "p", Enabled: false},
 		},
 		Runner: func(context.Context, Job) error { return nil },
 	})
@@ -595,7 +595,7 @@ func TestHealthReportsAllJobs(t *testing.T) {
 	if len(health) != 3 {
 		t.Fatalf("expected 3 jobs, got %d", len(health))
 	}
-	if health[0].Name != "Morning brief" {
+	if health[0].Name != "Daily report" {
 		t.Fatalf("health should be sorted by name, got %s first", health[0].Name)
 	}
 	for _, h := range health {

@@ -433,7 +433,7 @@ func TestOffsetAdvancesPastDroppedUpdates(t *testing.T) {
 	_ = fake
 }
 
-// A weekly debrief can exceed Telegram's limit. Splitting must land on
+// A long report can exceed Telegram's limit. Splitting must land on
 // paragraph boundaries, never mid-sentence.
 func TestLongMessageSplitsOnBoundaries(t *testing.T) {
 	para := strings.Repeat("This is a sentence about the week. ", 60)
@@ -517,7 +517,7 @@ func TestNotifyRespectsAllowlist(t *testing.T) {
 	g, fake := newGateway(t, agent, []int64{123456789})
 
 	ctx := context.Background()
-	if err := g.Notify(ctx, 123456789, "Morning brief ready."); err != nil {
+	if err := g.Notify(ctx, 123456789, "Daily report ready."); err != nil {
 		t.Fatalf("Notify: %v", err)
 	}
 	if !waitFor(t, func() bool { return len(fake.messages()) > 0 }) {

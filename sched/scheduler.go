@@ -197,8 +197,8 @@ func (s *Scheduler) tick(ctx context.Context) {
 		s.mu.Unlock()
 
 		// A run more than an hour late means the process was down. Firing a
-		// 07:00 morning brief at 15:00 is worse than skipping it — the content
-		// is wrong and it reads as the system being confused.
+		// time-sensitive job hours after its window is worse than skipping it —
+		// the content is stale and it reads as the system being confused.
 		if late := now.Sub(due); late > time.Hour {
 			s.log.Warn("skipping stale run", "job", job.Name,
 				"due", due.Format(time.RFC3339), "late", late.Round(time.Minute))

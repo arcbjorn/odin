@@ -29,23 +29,23 @@ func writeJobs(t *testing.T, manifest string, prompts map[string]string) string 
 
 const twoJobs = `
 [[job]]
-name = "Morning brief"
+name = "Daily report"
 schedule = "0 7 * * *"
-prompt = "morning-brief.md"
+prompt = "daily-report.md"
 skills = ["database-guide"]
 enabled = true
 
 [[job]]
-name = "Night guard"
+name = "Hourly check"
 schedule = "30 22 * * *"
-prompt = "night-guard.md"
+prompt = "hourly-check.md"
 enabled = false
 `
 
 func TestLoadJobs(t *testing.T) {
 	dir := writeJobs(t, twoJobs, map[string]string{
-		"morning-brief.md": "You are a general assistant. Ground every line in a row you read.",
-		"night-guard.md":   "Check whether today's review exists.",
+		"daily-report.md": "You are a general assistant. Ground every line in a row you read.",
+		"hourly-check.md":   "Check whether today's review exists.",
 	})
 
 	set, err := Load(dir)
@@ -57,7 +57,7 @@ func TestLoadJobs(t *testing.T) {
 	}
 
 	// Sorted by name for stable output.
-	if set.Jobs[0].Name != "Morning brief" {
+	if set.Jobs[0].Name != "Daily report" {
 		t.Fatalf("jobs not sorted: %v", set.Names())
 	}
 	if !strings.Contains(set.Jobs[0].Prompt, "Ground every line") {
@@ -75,11 +75,11 @@ func TestLoadJobs(t *testing.T) {
 func TestEnabledDefaultsTrue(t *testing.T) {
 	manifest := `
 [[job]]
-name = "Morning brief"
+name = "Daily report"
 schedule = "0 7 * * *"
-prompt = "morning-brief.md"
+prompt = "daily-report.md"
 `
-	dir := writeJobs(t, manifest, map[string]string{"morning-brief.md": "brief"})
+	dir := writeJobs(t, manifest, map[string]string{"daily-report.md": "brief"})
 
 	set, err := Load(dir)
 	if err != nil {
@@ -94,10 +94,10 @@ prompt = "morning-brief.md"
 func TestPromptFilenameDerivedFromName(t *testing.T) {
 	manifest := `
 [[job]]
-name = "Weekly debrief"
+name = "Weekly rollup"
 schedule = "0 18 * * 0"
 `
-	dir := writeJobs(t, manifest, map[string]string{"weekly-debrief.md": "debrief"})
+	dir := writeJobs(t, manifest, map[string]string{"weekly-rollup.md": "debrief"})
 
 	set, err := Load(dir)
 	if err != nil {
@@ -110,13 +110,13 @@ schedule = "0 18 * * 0"
 
 // A missing prompt file must fail at load, not at 07:00 with nobody watching.
 func TestMissingPromptIsFatal(t *testing.T) {
-	dir := writeJobs(t, twoJobs, map[string]string{"morning-brief.md": "brief"})
+	dir := writeJobs(t, twoJobs, map[string]string{"daily-report.md": "brief"})
 
 	_, err := Load(dir)
 	if err == nil {
 		t.Fatal("expected a missing prompt file to fail the load")
 	}
-	if !strings.Contains(err.Error(), "night-guard.md") {
+	if !strings.Contains(err.Error(), "hourly-check.md") {
 		t.Fatalf("error should name the missing file, got: %v", err)
 	}
 }
@@ -124,8 +124,8 @@ func TestMissingPromptIsFatal(t *testing.T) {
 // An empty prompt would send the model nothing and produce a confusing reply.
 func TestEmptyPromptIsFatal(t *testing.T) {
 	dir := writeJobs(t, twoJobs, map[string]string{
-		"morning-brief.md": "brief",
-		"night-guard.md":   "   \n\n",
+		"daily-report.md": "brief",
+		"hourly-check.md":   "   \n\n",
 	})
 	if _, err := Load(dir); err == nil {
 		t.Fatal("expected an empty prompt to fail the load")
@@ -154,12 +154,12 @@ prompt = "broken.md"
 func TestDuplicateJobNameIsFatal(t *testing.T) {
 	manifest := `
 [[job]]
-name = "Morning brief"
+name = "Daily report"
 schedule = "0 7 * * *"
 prompt = "a.md"
 
 [[job]]
-name = "Morning brief"
+name = "Daily report"
 schedule = "0 8 * * *"
 prompt = "b.md"
 `
@@ -179,14 +179,14 @@ func TestMissingManifestReportsNotExist(t *testing.T) {
 
 func TestFindIsCaseInsensitive(t *testing.T) {
 	dir := writeJobs(t, twoJobs, map[string]string{
-		"morning-brief.md": "brief",
-		"night-guard.md":   "guard",
+		"daily-report.md": "brief",
+		"hourly-check.md":   "guard",
 	})
 	set, err := Load(dir)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if _, ok := set.Find("morning brief"); !ok {
+	if _, ok := set.Find("daily report"); !ok {
 		t.Fatal("Find should be case-insensitive")
 	}
 	if _, ok := set.Find("nonexistent"); ok {

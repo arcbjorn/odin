@@ -12,22 +12,22 @@ import (
 
 const fourJobs = `
 [[job]]
-name = "Morning brief"
+name = "Daily report"
 schedule = "0 7 * * *"
 prompt = "morning-brief.md"
 
 [[job]]
-name = "Evening close"
+name = "Nightly summary"
 schedule = "30 21 * * *"
 prompt = "evening-close.md"
 
 [[job]]
-name = "Night guard"
+name = "Hourly check"
 schedule = "30 22 * * *"
 prompt = "night-guard.md"
 
 [[job]]
-name = "Weekly debrief"
+name = "Weekly rollup"
 schedule = "0 18 * * 0"
 prompt = "weekly-debrief.md"
 enabled = false
@@ -89,9 +89,9 @@ func newWatchdog(t *testing.T, profileDir string, now time.Time) *Watchdog {
 func TestHealthySystemIsSilent(t *testing.T) {
 	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
 	dir := newProfile(t, fourJobs, map[string]stateEntry{
-		"Morning brief": {At: now.Add(-5 * time.Hour)},  // ran at 07:00
-		"Evening close": {At: now.Add(-14*time.Hour - 30*time.Minute)},
-		"Night guard":   {At: now.Add(-13*time.Hour - 30*time.Minute)},
+		"Daily report": {At: now.Add(-5 * time.Hour)},  // ran at 07:00
+		"Nightly summary": {At: now.Add(-14*time.Hour - 30*time.Minute)},
+		"Hourly check":   {At: now.Add(-13*time.Hour - 30*time.Minute)},
 	})
 
 	findings, err := newWatchdog(t, dir, now).Check()
@@ -103,15 +103,15 @@ func TestHealthySystemIsSilent(t *testing.T) {
 	}
 }
 
-// The core case: the morning brief's window came and went with no run. This
+// The core case: the daily report's window came and went with no run. This
 // is what a silently dead agent looks like from outside.
 func TestOverdueJobIsCaught(t *testing.T) {
 	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
 	dir := newProfile(t, fourJobs, map[string]stateEntry{
 		// Last ran yesterday morning; today's 07:00 never happened.
-		"Morning brief": {At: time.Date(2026, 7, 19, 7, 0, 0, 0, time.UTC)},
-		"Evening close": {At: now.Add(-14*time.Hour - 30*time.Minute)},
-		"Night guard":   {At: now.Add(-13*time.Hour - 30*time.Minute)},
+		"Daily report": {At: time.Date(2026, 7, 19, 7, 0, 0, 0, time.UTC)},
+		"Nightly summary": {At: now.Add(-14*time.Hour - 30*time.Minute)},
+		"Hourly check":   {At: now.Add(-13*time.Hour - 30*time.Minute)},
 	})
 
 	findings, err := newWatchdog(t, dir, now).Check()
@@ -121,7 +121,7 @@ func TestOverdueJobIsCaught(t *testing.T) {
 	if len(findings) != 1 {
 		t.Fatalf("expected 1 finding, got %v", findings)
 	}
-	if findings[0].Job != "Morning brief" || !strings.Contains(findings[0].Problem, "overdue") {
+	if findings[0].Job != "Daily report" || !strings.Contains(findings[0].Problem, "overdue") {
 		t.Fatalf("wrong finding: %+v", findings[0])
 	}
 }
@@ -132,9 +132,9 @@ func TestOverdueJobIsCaught(t *testing.T) {
 func TestFailedRunIsReported(t *testing.T) {
 	now := time.Date(2026, 7, 20, 8, 0, 0, 0, time.UTC)
 	dir := newProfile(t, fourJobs, map[string]stateEntry{
-		"Morning brief": {At: now.Add(-time.Hour), Error: "all 3 providers failed"},
-		"Evening close": {At: now.Add(-10*time.Hour - 30*time.Minute)},
-		"Night guard":   {At: now.Add(-9*time.Hour - 30*time.Minute)},
+		"Daily report": {At: now.Add(-time.Hour), Error: "all 3 providers failed"},
+		"Nightly summary": {At: now.Add(-10*time.Hour - 30*time.Minute)},
+		"Hourly check":   {At: now.Add(-9*time.Hour - 30*time.Minute)},
 	})
 
 	findings, err := newWatchdog(t, dir, now).Check()
@@ -153,9 +153,9 @@ func TestFailedRunIsReported(t *testing.T) {
 func TestSkippedRunIsReported(t *testing.T) {
 	now := time.Date(2026, 7, 20, 16, 0, 0, 0, time.UTC)
 	dir := newProfile(t, fourJobs, map[string]stateEntry{
-		"Morning brief": {At: now.Add(-time.Hour), Skipped: true, Error: "skipped: 8h0m late"},
-		"Evening close": {At: now.Add(-18*time.Hour - 30*time.Minute)},
-		"Night guard":   {At: now.Add(-17*time.Hour - 30*time.Minute)},
+		"Daily report": {At: now.Add(-time.Hour), Skipped: true, Error: "skipped: 8h0m late"},
+		"Nightly summary": {At: now.Add(-18*time.Hour - 30*time.Minute)},
+		"Hourly check":   {At: now.Add(-17*time.Hour - 30*time.Minute)},
 	})
 
 	findings, err := newWatchdog(t, dir, now).Check()
@@ -171,10 +171,10 @@ func TestSkippedRunIsReported(t *testing.T) {
 func TestDisabledJobIsNotReported(t *testing.T) {
 	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
 	dir := newProfile(t, fourJobs, map[string]stateEntry{
-		"Morning brief": {At: now.Add(-5 * time.Hour)},
-		"Evening close": {At: now.Add(-14*time.Hour - 30*time.Minute)},
-		"Night guard":   {At: now.Add(-13*time.Hour - 30*time.Minute)},
-		// Weekly debrief is enabled = false and has never run.
+		"Daily report": {At: now.Add(-5 * time.Hour)},
+		"Nightly summary": {At: now.Add(-14*time.Hour - 30*time.Minute)},
+		"Hourly check":   {At: now.Add(-13*time.Hour - 30*time.Minute)},
+		// Weekly rollup is enabled = false and has never run.
 	})
 
 	findings, err := newWatchdog(t, dir, now).Check()
@@ -182,7 +182,7 @@ func TestDisabledJobIsNotReported(t *testing.T) {
 		t.Fatalf("Check: %v", err)
 	}
 	for _, f := range findings {
-		if f.Job == "Weekly debrief" {
+		if f.Job == "Weekly rollup" {
 			t.Fatalf("disabled job reported as a fault: %+v", f)
 		}
 	}
@@ -192,17 +192,17 @@ func TestDisabledJobIsNotReported(t *testing.T) {
 func TestNeverRunJobIsCaught(t *testing.T) {
 	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
 	dir := newProfile(t, fourJobs, map[string]stateEntry{
-		"Morning brief": {At: now.Add(-5 * time.Hour)},
-		"Evening close": {At: now.Add(-14*time.Hour - 30*time.Minute)},
-		// Night guard missing entirely.
+		"Daily report": {At: now.Add(-5 * time.Hour)},
+		"Nightly summary": {At: now.Add(-14*time.Hour - 30*time.Minute)},
+		// Hourly check missing entirely.
 	})
 
 	findings, err := newWatchdog(t, dir, now).Check()
 	if err != nil {
 		t.Fatalf("Check: %v", err)
 	}
-	if len(findings) != 1 || findings[0].Job != "Night guard" {
-		t.Fatalf("expected Night guard flagged, got %v", findings)
+	if len(findings) != 1 || findings[0].Job != "Hourly check" {
+		t.Fatalf("expected Hourly check flagged, got %v", findings)
 	}
 	if !strings.Contains(findings[0].Problem, "never run") {
 		t.Fatalf("wrong problem: %+v", findings[0])
@@ -244,9 +244,9 @@ func TestJobWithinGraceWindowIsNotReported(t *testing.T) {
 	// 07:20 — the 07:00 brief is 20 minutes late, under the 45m threshold.
 	now := time.Date(2026, 7, 20, 7, 20, 0, 0, time.UTC)
 	dir := newProfile(t, fourJobs, map[string]stateEntry{
-		"Morning brief": {At: time.Date(2026, 7, 19, 7, 0, 0, 0, time.UTC)},
-		"Evening close": {At: time.Date(2026, 7, 19, 21, 30, 0, 0, time.UTC)},
-		"Night guard":   {At: time.Date(2026, 7, 19, 22, 30, 0, 0, time.UTC)},
+		"Daily report": {At: time.Date(2026, 7, 19, 7, 0, 0, 0, time.UTC)},
+		"Nightly summary": {At: time.Date(2026, 7, 19, 21, 30, 0, 0, time.UTC)},
+		"Hourly check":   {At: time.Date(2026, 7, 19, 22, 30, 0, 0, time.UTC)},
 	})
 
 	findings, err := newWatchdog(t, dir, now).Check()
@@ -262,9 +262,9 @@ func TestJobWithinGraceWindowIsNotReported(t *testing.T) {
 func TestIdenticalAlertIsDeduped(t *testing.T) {
 	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
 	dir := newProfile(t, fourJobs, map[string]stateEntry{
-		"Morning brief": {At: now.Add(-time.Hour), Error: "provider down"},
-		"Evening close": {At: now.Add(-14*time.Hour - 30*time.Minute)},
-		"Night guard":   {At: now.Add(-13*time.Hour - 30*time.Minute)},
+		"Daily report": {At: now.Add(-time.Hour), Error: "provider down"},
+		"Nightly summary": {At: now.Add(-14*time.Hour - 30*time.Minute)},
+		"Hourly check":   {At: now.Add(-13*time.Hour - 30*time.Minute)},
 	})
 
 	stateDir := t.TempDir()
@@ -279,7 +279,7 @@ func TestIdenticalAlertIsDeduped(t *testing.T) {
 		return w
 	}
 
-	body := "Odin is not healthy:\n- Morning brief: failed"
+	body := "Odin is not healthy:\n- Daily report: failed"
 
 	if send, _ := build(now).shouldSend(body); !send {
 		t.Fatal("first alert should send")
@@ -404,14 +404,14 @@ func TestManifestParsing(t *testing.T) {
 	for _, j := range jobs {
 		byName[j.Name] = j
 	}
-	if !byName["Morning brief"].Enabled {
+	if !byName["Daily report"].Enabled {
 		t.Error("enabled should default to true")
 	}
-	if byName["Weekly debrief"].Enabled {
+	if byName["Weekly rollup"].Enabled {
 		t.Error("enabled = false not honored")
 	}
-	if byName["Morning brief"].Schedule != "0 7 * * *" {
-		t.Errorf("schedule = %q", byName["Morning brief"].Schedule)
+	if byName["Daily report"].Schedule != "0 7 * * *" {
+		t.Errorf("schedule = %q", byName["Daily report"].Schedule)
 	}
 }
 
