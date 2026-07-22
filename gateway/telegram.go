@@ -167,8 +167,7 @@ type apiResponse struct {
 // botCommands is the menu Telegram shows when a user types "/". It is static —
 // the commands are compiled in — so it only changes across deploys.
 var botCommands = []botCommand{
-	{Command: "new", Description: "Start a fresh conversation"},
-	{Command: "reset", Description: "Start a fresh conversation"},
+	{Command: "new", Description: "Clear the chat and start fresh"},
 }
 
 type botCommand struct {
@@ -362,7 +361,9 @@ func sameCommands(a, b []botCommand) bool {
 // to the agent, so unknown slash commands are ordinary input.
 func (t *Telegram) command(chatID int64, cmd string) (string, bool) {
 	switch strings.Fields(cmd)[0] {
-	case "/start", "/reset", "/new":
+	// /new is the single "clear the chat" command; /start is what Telegram
+	// sends when a chat is first opened, and clears too.
+	case "/start", "/new":
 		t.mu.Lock()
 		delete(t.sessions, chatID)
 		t.mu.Unlock()

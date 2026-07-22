@@ -52,10 +52,10 @@ func (f *fakeAgent) callCount() int {
 
 // fakeTelegram stands in for api.telegram.org.
 type fakeTelegram struct {
-	mu           sync.Mutex
-	sent         []string
-	setCommands  int    // times setMyCommands was called
-	getResult    string // what getMyCommands returns (default: empty set)
+	mu          sync.Mutex
+	sent        []string
+	setCommands int    // times setMyCommands was called
+	getResult   string // what getMyCommands returns (default: empty set)
 }
 
 func (f *fakeTelegram) server(t *testing.T) *httptest.Server {
@@ -313,23 +313,23 @@ func TestExpiredSessionStartsFresh(t *testing.T) {
 	}
 }
 
-func TestResetCommandClearsHistory(t *testing.T) {
+func TestNewCommandClearsHistory(t *testing.T) {
 	agent := &fakeAgent{reply: "ack"}
 	g, fake := newGateway(t, agent, []int64{1})
 
 	ctx := context.Background()
 	g.respond(ctx, 1, "remember this")
-	g.respond(ctx, 1, "/reset")
+	g.respond(ctx, 1, "/new")
 	g.respond(ctx, 1, "fresh start")
 
 	msgs := fake.messages()
 	if len(msgs) < 2 || !strings.Contains(msgs[1], "Fresh session") {
-		t.Fatalf("reset not acknowledged: %v", msgs)
+		t.Fatalf("clear not acknowledged: %v", msgs)
 	}
 
 	agent.mu.Lock()
 	defer agent.mu.Unlock()
-	// /reset must not reach the agent, and the next turn starts clean.
+	// /new must not reach the agent, and the next turn starts clean.
 	if len(agent.calls) != 2 {
 		t.Fatalf("expected 2 agent calls, got %d", len(agent.calls))
 	}
@@ -477,7 +477,7 @@ func TestSplitHandlesUnicode(t *testing.T) {
 }
 
 // Scheduled jobs reach the user through Notify; it must respect the allowlist.
-// The command menu must be registered so users can discover /new and /reset.
+// The command menu must be registered so users can discover /new.
 func TestSyncCommandsRegistersWhenMenuIsEmpty(t *testing.T) {
 	agent := &fakeAgent{reply: "ok"}
 	g, fake := newGateway(t, agent, []int64{1})
