@@ -57,6 +57,10 @@ func formatMarkdownV2(text string) string {
 		return text
 	}
 
+	// Telegram has no table syntax; a pipe table renders as escaped-pipe noise.
+	// Rewrite tables to bullet groups before anything else, exactly as Hermes does.
+	text = tableToBullets(text)
+
 	var stash []string
 	ph := func(v string) string {
 		stash = append(stash, v)
@@ -132,11 +136,122 @@ var (
 	reLinkPlain   = regexp.MustCompile(`\[([^\]]+)\]\([^()\s]+\)`)
 )
 
+// --- GFM tables → bullet groups (ported from Hermes convert_table_to_bullets) ---
+//
+// Telegram MarkdownV2 has no table syntax and its proportional font destroys any
+// column alignment, so a pipe table is unreadable. Each data row is rewritten as
+// a bold heading (the row's label/first cell) followed by "header: value"
+// bullets, which reflow cleanly on a phone.
+
+// tableSeparatorRE matches a GFM delimiter row (|---|:--:|...), requiring at
+// least one internal pipe so a lone `---` rule is not treated as a table.
+var tableSeparatorRE = regexp.MustCompile(`^\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*){1,}\|?\s*$`)
+
+func isTableRow(line string) bool {
+	s := strings.TrimSpace(line)
+	return s != "" && strings.Contains(s, "|")
+}
+
+func splitTableRow(line string) []string {
+	s := strings.TrimSpace(line)
+	s = strings.TrimPrefix(s, "|")
+	s = strings.TrimSuffix(s, "|")
+	parts := strings.Split(s, "|")
+	for i := range parts {
+		parts[i] = strings.TrimSpace(parts[i])
+	}
+	return parts
+}
+
+func tableToBullets(text string) string {
+	if !strings.Contains(text, "|") || !strings.Contains(text, "-") {
+		return text
+	}
+	lines := strings.Split(text, "\n")
+	out := make([]string, 0, len(lines))
+	inFence := false
+	for i := 0; i < len(lines); {
+		line := lines[i]
+		if strings.HasPrefix(strings.TrimSpace(line), "```") {
+			inFence = !inFence
+			out = append(out, line)
+			i++
+			continue
+		}
+		if !inFence && strings.Contains(line, "|") &&
+			i+1 < len(lines) && tableSeparatorRE.MatchString(lines[i+1]) {
+			block := []string{line, lines[i+1]}
+			j := i + 2
+			for j < len(lines) && isTableRow(lines[j]) {
+				block = append(block, lines[j])
+				j++
+			}
+			out = append(out, renderTableBlock(block))
+			i = j
+			continue
+		}
+		out = append(out, line)
+		i++
+	}
+	return strings.Join(out, "\n")
+}
+
+func renderTableBlock(block []string) string {
+	if len(block) < 3 {
+		return strings.Join(block, "\n")
+	}
+	headers := splitTableRow(block[0])
+	if len(headers) < 2 {
+		return strings.Join(block, "\n")
+	}
+	// A leading row-label column shows up as one more cell than there are headers.
+	hasRowLabel := len(splitTableRow(block[2])) == len(headers)+1
+
+	groups := make([]string, 0, len(block)-2)
+	for idx, row := range block[2:] {
+		cells := splitTableRow(row)
+		var heading string
+		var data []string
+		if hasRowLabel {
+			if len(cells) > 0 && cells[0] != "" {
+				heading = cells[0]
+			} else {
+				heading = "Row " + strconv.Itoa(idx+1)
+			}
+			data = cells[1:]
+		} else {
+			heading = "Row " + strconv.Itoa(idx+1)
+			for _, c := range cells {
+				if c != "" {
+					heading = c
+					break
+				}
+			}
+			data = cells
+		}
+		for len(data) < len(headers) {
+			data = append(data, "")
+		}
+		data = data[:len(headers)]
+
+		lines := []string{"**" + heading + "**"}
+		for k, header := range headers {
+			if !hasRowLabel && data[k] == heading {
+				continue // the heading already stands in for its own column
+			}
+			lines = append(lines, "• "+header+": "+data[k])
+		}
+		groups = append(groups, strings.Join(lines, "\n"))
+	}
+	return strings.Join(groups, "\n\n")
+}
+
 // stripMarkdown removes Markdown markers to produce clean plain text for the
 // fallback path — a message that reads naturally rather than one littered with
 // asterisks and backticks. It runs on the original prose, not the MarkdownV2
 // conversion, so it is a straightforward marker strip.
 func stripMarkdown(text string) string {
+	text = tableToBullets(text)
 	text = reFencePlain.ReplaceAllString(text, "$1")
 	text = reInlinePlain.ReplaceAllString(text, "$1")
 	text = reLinkPlain.ReplaceAllString(text, "$1")
