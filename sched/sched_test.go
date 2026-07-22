@@ -157,9 +157,8 @@ func TestInvalidExpressions(t *testing.T) {
 	}
 }
 
-// The whole reason the scheduler is in-process: the database's timezone is
-// switchable live for travel, and job times must move with it. A systemd timer
-// would keep firing on host time.
+// The scheduler uses the database timezone supplied at startup rather than the
+// host clock. Restarting with a travel timezone must move job times with it.
 func TestJobTimesFollowDBTimezone(t *testing.T) {
 	home, err := time.LoadLocation("America/New_York") // UTC-3
 	if err != nil {
@@ -516,6 +515,47 @@ func TestStateSurvivesRestart(t *testing.T) {
 	health := second.Health()
 	if len(health) != 1 || health[0].LastRun.IsZero() {
 		t.Fatalf("last run did not survive restart: %+v", health)
+	}
+}
+
+func TestRestartUpdatesStateTimezoneForWatchdog(t *testing.T) {
+	state := filepath.Join(t.TempDir(), "sched.json")
+	home, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatalf("home timezone: %v", err)
+	}
+	away, err := time.LoadLocation("Asia/Tokyo")
+	if err != nil {
+		t.Fatalf("away timezone: %v", err)
+	}
+
+	store, err := newStateStore(state)
+	if err != nil {
+		t.Fatalf("state: %v", err)
+	}
+	lastRun := time.Date(2026, 7, 20, 7, 0, 0, 0, home)
+	store.record("Daily report", runRecord{At: lastRun, Timezone: home.String()})
+
+	s, err := New(Config{
+		Location: away, Logger: quiet(), StatePath: state,
+		Jobs: []Job{{
+			Name: "Daily report", Schedule: mustParse(t, "0 7 * * *"),
+			Prompt: "brief", Enabled: true,
+		}},
+		Runner: func(context.Context, Job) error { return nil },
+	})
+	if err != nil {
+		t.Fatalf("restart: %v", err)
+	}
+	rec, ok := s.state.last("Daily report")
+	if !ok {
+		t.Fatal("last run disappeared")
+	}
+	if rec.Timezone != away.String() {
+		t.Fatalf("timezone = %q, want %q", rec.Timezone, away.String())
+	}
+	if !rec.At.Equal(lastRun) {
+		t.Fatalf("last run instant changed: got %s, want %s", rec.At, lastRun)
 	}
 }
 

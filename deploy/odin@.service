@@ -27,9 +27,9 @@ Environment=ODIN_ROOT=/var/lib/odin
 ExecStart=/usr/local/bin/odin run --profile %i
 
 # Supervision is what systemd is genuinely good at. Scheduling is not: the
-# tracker's timezone is switchable live for travel, and a systemd timer would
-# keep firing on host time. Odin owns its own clock; systemd only keeps the
-# process alive.
+# tracker's timezone may differ from host time and changes for travel. Odin
+# loads that clock at startup; restart the unit after changing it. systemd only
+# keeps the process alive.
 Restart=always
 RestartSec=10s
 

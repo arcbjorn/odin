@@ -972,7 +972,12 @@ func runJob(ctx context.Context, rt *profile.Runtime, job sched.Job) (string, er
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
 
-	res, err := rt.Loop.Run(ctx, []model.Message{{Role: model.RoleUser, Content: job.Prompt}})
+	prompt, err := buildJobPrompt(rt, job)
+	if err != nil {
+		return "", err
+	}
+
+	res, err := rt.Loop.Run(ctx, []model.Message{{Role: model.RoleUser, Content: prompt}})
 	if err != nil {
 		if res != nil && res.Text != "" {
 			return res.Text, err
@@ -980,4 +985,29 @@ func runJob(ctx context.Context, rt *profile.Runtime, job sched.Job) (string, er
 		return "", err
 	}
 	return res.Text, nil
+}
+
+// buildJobPrompt resolves declared skill dependencies before the model call.
+// This makes jobs deterministic and avoids spending a turn hoping the model
+// notices an advisory skill name in the catalog.
+func buildJobPrompt(rt *profile.Runtime, job sched.Job) (string, error) {
+	if len(job.Skills) == 0 {
+		return job.Prompt, nil
+	}
+	if rt.Skills == nil {
+		return "", fmt.Errorf("job %q declares skills but the skills toolset is disabled", job.Name)
+	}
+
+	var b strings.Builder
+	b.WriteString("The following skill documents are required for this job. Follow their procedures.\n")
+	for _, name := range job.Skills {
+		body, err := rt.Skills.Read(name)
+		if err != nil {
+			return "", fmt.Errorf("job %q: load skill %q: %w", job.Name, name, err)
+		}
+		fmt.Fprintf(&b, "\n## Required skill: %s\n\n%s\n", name, strings.TrimSpace(body))
+	}
+	b.WriteString("\n## Job\n\n")
+	b.WriteString(job.Prompt)
+	return b.String(), nil
 }

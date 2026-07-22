@@ -160,6 +160,7 @@ func scaffoldGitignore() string {
 auth/
 state/
 notes/
+backups/
 db.sqlite
 db.sqlite-shm
 db.sqlite-wal

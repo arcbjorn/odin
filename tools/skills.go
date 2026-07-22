@@ -69,7 +69,13 @@ func (s *Skills) handleRead(_ context.Context, raw json.RawMessage) (string, err
 	if err := json.Unmarshal(raw, &in); err != nil {
 		return "", fmt.Errorf("invalid input: %w", err)
 	}
-	name := strings.TrimSpace(in.Name)
+	return s.Read(in.Name)
+}
+
+// Read returns one installed skill document. Scheduled jobs use the same path
+// as the model-facing tool so validation and size limits cannot drift.
+func (s *Skills) Read(requested string) (string, error) {
+	name := strings.TrimSpace(requested)
 	if name == "" {
 		return "", fmt.Errorf("name is required")
 	}

@@ -27,7 +27,8 @@ type Job struct {
 	// Prompt is the instruction sent to the agent when the job fires.
 	Prompt string
 
-	// Skills the job needs loaded. Advisory: the agent reads them itself.
+	// Skills lists documents loaded into this job's isolated prompt before it
+	// runs. Interactive turns still load skills on demand with read_skill.
 	Skills []string
 
 	// Enabled allows a job to be switched off without deleting its history.
@@ -61,8 +62,8 @@ type Config struct {
 	Jobs []Job
 
 	// Location must come from the database's settings table, not from the host
-	// clock or config.toml. It is switchable live for travel, and every job
-	// time must move with it.
+	// clock or config.toml. It is fixed for this process; restart Odin after a
+	// travel-related timezone change so every job moves with it.
 	Location *time.Location
 
 	Runner Runner
@@ -131,6 +132,7 @@ func New(cfg Config) (*Scheduler, error) {
 		return nil, err
 	}
 	s.state = store
+	s.state.setTimezone(s.loc.String())
 
 	now := s.now().In(s.loc)
 	for _, j := range s.jobs {
@@ -203,7 +205,7 @@ func (s *Scheduler) tick(ctx context.Context) {
 			s.log.Warn("skipping stale run", "job", job.Name,
 				"due", due.Format(time.RFC3339), "late", late.Round(time.Minute))
 			s.state.record(job.Name, runRecord{
-				At: now, Skipped: true,
+				At: now, Timezone: s.loc.String(), Skipped: true,
 				Error: fmt.Sprintf("skipped: %s late", late.Round(time.Minute)),
 			})
 			continue
@@ -222,11 +224,11 @@ func (s *Scheduler) execute(ctx context.Context, job Job, due time.Time) {
 		}
 	}
 
-	start := s.now()
+	start := s.now().In(s.loc)
 	s.log.Info("job started", "job", job.Name, "due", due.Format(time.RFC3339))
 
 	err := s.safeRun(ctx, job)
-	rec := runRecord{At: start, Duration: s.now().Sub(start)}
+	rec := runRecord{At: start, Timezone: s.loc.String(), Duration: s.now().Sub(start)}
 	if err != nil {
 		rec.Error = err.Error()
 		// Failed runs are logged and persisted for status reporting.
@@ -320,6 +322,7 @@ type stateStore struct {
 
 type runRecord struct {
 	At       time.Time     `json:"at"`
+	Timezone string        `json:"timezone,omitempty"`
 	Duration time.Duration `json:"duration_ns,omitempty"`
 	Error    string        `json:"error,omitempty"`
 	Skipped  bool          `json:"skipped,omitempty"`
@@ -344,6 +347,34 @@ func newStateStore(path string) (*stateStore, error) {
 		s.runs = make(map[string]runRecord)
 	}
 	return s, nil
+}
+
+// setTimezone updates the scheduling context on existing records at startup.
+// JSON timestamps retain only a numeric offset, which is insufficient across
+// DST or after travel. The watchdog needs the authoritative IANA zone even
+// before the next job records a fresh run.
+func (s *stateStore) setTimezone(name string) {
+	s.mu.Lock()
+	changed := false
+	for job, rec := range s.runs {
+		if rec.Timezone != name {
+			rec.Timezone = name
+			s.runs[job] = rec
+			changed = true
+		}
+	}
+	snapshot := make(map[string]runRecord, len(s.runs))
+	for k, v := range s.runs {
+		snapshot[k] = v
+	}
+	s.mu.Unlock()
+
+	if !changed || s.path == "" {
+		return
+	}
+	if err := writeJSONAtomic(s.path, snapshot); err != nil {
+		slog.Default().Warn("could not persist scheduler timezone", "error", err)
+	}
 }
 
 func (s *stateStore) record(job string, rec runRecord) {

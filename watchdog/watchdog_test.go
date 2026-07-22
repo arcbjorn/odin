@@ -34,9 +34,10 @@ enabled = false
 `
 
 type stateEntry struct {
-	At      time.Time `json:"at"`
-	Error   string    `json:"error,omitempty"`
-	Skipped bool      `json:"skipped,omitempty"`
+	At       time.Time `json:"at"`
+	Timezone string    `json:"timezone,omitempty"`
+	Error    string    `json:"error,omitempty"`
+	Skipped  bool      `json:"skipped,omitempty"`
 }
 
 // newProfile lays out just what the watchdog reads: the job manifest and the
@@ -89,9 +90,9 @@ func newWatchdog(t *testing.T, profileDir string, now time.Time) *Watchdog {
 func TestHealthySystemIsSilent(t *testing.T) {
 	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
 	dir := newProfile(t, fourJobs, map[string]stateEntry{
-		"Daily report": {At: now.Add(-5 * time.Hour)},  // ran at 07:00
+		"Daily report":    {At: now.Add(-5 * time.Hour)}, // ran at 07:00
 		"Nightly summary": {At: now.Add(-14*time.Hour - 30*time.Minute)},
-		"Hourly check":   {At: now.Add(-13*time.Hour - 30*time.Minute)},
+		"Hourly check":    {At: now.Add(-13*time.Hour - 30*time.Minute)},
 	})
 
 	findings, err := newWatchdog(t, dir, now).Check()
@@ -109,9 +110,9 @@ func TestOverdueJobIsCaught(t *testing.T) {
 	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
 	dir := newProfile(t, fourJobs, map[string]stateEntry{
 		// Last ran yesterday morning; today's 07:00 never happened.
-		"Daily report": {At: time.Date(2026, 7, 19, 7, 0, 0, 0, time.UTC)},
+		"Daily report":    {At: time.Date(2026, 7, 19, 7, 0, 0, 0, time.UTC)},
 		"Nightly summary": {At: now.Add(-14*time.Hour - 30*time.Minute)},
-		"Hourly check":   {At: now.Add(-13*time.Hour - 30*time.Minute)},
+		"Hourly check":    {At: now.Add(-13*time.Hour - 30*time.Minute)},
 	})
 
 	findings, err := newWatchdog(t, dir, now).Check()
@@ -132,9 +133,9 @@ func TestOverdueJobIsCaught(t *testing.T) {
 func TestFailedRunIsReported(t *testing.T) {
 	now := time.Date(2026, 7, 20, 8, 0, 0, 0, time.UTC)
 	dir := newProfile(t, fourJobs, map[string]stateEntry{
-		"Daily report": {At: now.Add(-time.Hour), Error: "all 3 providers failed"},
+		"Daily report":    {At: now.Add(-time.Hour), Error: "all 3 providers failed"},
 		"Nightly summary": {At: now.Add(-10*time.Hour - 30*time.Minute)},
-		"Hourly check":   {At: now.Add(-9*time.Hour - 30*time.Minute)},
+		"Hourly check":    {At: now.Add(-9*time.Hour - 30*time.Minute)},
 	})
 
 	findings, err := newWatchdog(t, dir, now).Check()
@@ -153,9 +154,9 @@ func TestFailedRunIsReported(t *testing.T) {
 func TestSkippedRunIsReported(t *testing.T) {
 	now := time.Date(2026, 7, 20, 16, 0, 0, 0, time.UTC)
 	dir := newProfile(t, fourJobs, map[string]stateEntry{
-		"Daily report": {At: now.Add(-time.Hour), Skipped: true, Error: "skipped: 8h0m late"},
+		"Daily report":    {At: now.Add(-time.Hour), Skipped: true, Error: "skipped: 8h0m late"},
 		"Nightly summary": {At: now.Add(-18*time.Hour - 30*time.Minute)},
-		"Hourly check":   {At: now.Add(-17*time.Hour - 30*time.Minute)},
+		"Hourly check":    {At: now.Add(-17*time.Hour - 30*time.Minute)},
 	})
 
 	findings, err := newWatchdog(t, dir, now).Check()
@@ -171,9 +172,9 @@ func TestSkippedRunIsReported(t *testing.T) {
 func TestDisabledJobIsNotReported(t *testing.T) {
 	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
 	dir := newProfile(t, fourJobs, map[string]stateEntry{
-		"Daily report": {At: now.Add(-5 * time.Hour)},
+		"Daily report":    {At: now.Add(-5 * time.Hour)},
 		"Nightly summary": {At: now.Add(-14*time.Hour - 30*time.Minute)},
-		"Hourly check":   {At: now.Add(-13*time.Hour - 30*time.Minute)},
+		"Hourly check":    {At: now.Add(-13*time.Hour - 30*time.Minute)},
 		// Weekly rollup is enabled = false and has never run.
 	})
 
@@ -192,7 +193,7 @@ func TestDisabledJobIsNotReported(t *testing.T) {
 func TestNeverRunJobIsCaught(t *testing.T) {
 	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
 	dir := newProfile(t, fourJobs, map[string]stateEntry{
-		"Daily report": {At: now.Add(-5 * time.Hour)},
+		"Daily report":    {At: now.Add(-5 * time.Hour)},
 		"Nightly summary": {At: now.Add(-14*time.Hour - 30*time.Minute)},
 		// Hourly check missing entirely.
 	})
@@ -244,9 +245,9 @@ func TestJobWithinGraceWindowIsNotReported(t *testing.T) {
 	// 07:20 — the 07:00 brief is 20 minutes late, under the 45m threshold.
 	now := time.Date(2026, 7, 20, 7, 20, 0, 0, time.UTC)
 	dir := newProfile(t, fourJobs, map[string]stateEntry{
-		"Daily report": {At: time.Date(2026, 7, 19, 7, 0, 0, 0, time.UTC)},
+		"Daily report":    {At: time.Date(2026, 7, 19, 7, 0, 0, 0, time.UTC)},
 		"Nightly summary": {At: time.Date(2026, 7, 19, 21, 30, 0, 0, time.UTC)},
-		"Hourly check":   {At: time.Date(2026, 7, 19, 22, 30, 0, 0, time.UTC)},
+		"Hourly check":    {At: time.Date(2026, 7, 19, 22, 30, 0, 0, time.UTC)},
 	})
 
 	findings, err := newWatchdog(t, dir, now).Check()
@@ -262,9 +263,9 @@ func TestJobWithinGraceWindowIsNotReported(t *testing.T) {
 func TestIdenticalAlertIsDeduped(t *testing.T) {
 	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
 	dir := newProfile(t, fourJobs, map[string]stateEntry{
-		"Daily report": {At: now.Add(-time.Hour), Error: "provider down"},
+		"Daily report":    {At: now.Add(-time.Hour), Error: "provider down"},
 		"Nightly summary": {At: now.Add(-14*time.Hour - 30*time.Minute)},
-		"Hourly check":   {At: now.Add(-13*time.Hour - 30*time.Minute)},
+		"Hourly check":    {At: now.Add(-13*time.Hour - 30*time.Minute)},
 	})
 
 	stateDir := t.TempDir()
@@ -465,6 +466,49 @@ func TestOverdueUsesLocalTime(t *testing.T) {
 	}
 	if late := now.Sub(due); late < 4*time.Hour {
 		t.Fatalf("expected roughly 5h overdue, got %s", late)
+	}
+}
+
+// Serialized time.Time values retain an offset but lose their IANA location.
+// The recorded zone must restore DST rules or the watchdog can be one hour
+// late exactly when clocks change.
+func TestOverdueUsesRecordedTimezoneAcrossDST(t *testing.T) {
+	loc, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatalf("load location: %v", err)
+	}
+
+	lastRun := time.Date(2026, 3, 7, 7, 0, 0, 0, loc)
+	now := time.Date(2026, 3, 8, 8, 0, 0, 0, loc)
+	dir := newProfile(t, fourJobs, map[string]stateEntry{
+		"Daily report":    {At: lastRun, Timezone: loc.String()},
+		"Nightly summary": {At: time.Date(2026, 3, 7, 21, 30, 0, 0, loc), Timezone: loc.String()},
+		"Hourly check":    {At: time.Date(2026, 3, 7, 22, 30, 0, 0, loc), Timezone: loc.String()},
+	})
+
+	findings, err := newWatchdog(t, dir, now).Check()
+	if err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	if len(findings) != 1 || findings[0].Job != "Daily report" || !strings.Contains(findings[0].Problem, "overdue") {
+		t.Fatalf("expected DST-aware overdue finding, got %v", findings)
+	}
+}
+
+func TestInvalidRecordedTimezoneIsReported(t *testing.T) {
+	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	dir := newProfile(t, fourJobs, map[string]stateEntry{
+		"Daily report":    {At: now.Add(-24 * time.Hour), Timezone: "Not/AZone"},
+		"Nightly summary": {At: now.Add(-14*time.Hour - 30*time.Minute)},
+		"Hourly check":    {At: now.Add(-13*time.Hour - 30*time.Minute)},
+	})
+
+	findings, err := newWatchdog(t, dir, now).Check()
+	if err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	if len(findings) != 1 || !strings.Contains(findings[0].Problem, "invalid recorded timezone") {
+		t.Fatalf("expected invalid timezone finding, got %v", findings)
 	}
 }
 

@@ -70,8 +70,8 @@ type WebConfig struct {
 	// ReaderURL is the markdown-reader prefix. Swappable so a self-hosted
 	// reader can replace the public one without touching code.
 	ReaderURL string
-	// ReaderKeyEnv names an env var holding an optional reader API key,
-	// which raises the rate limit. The key is never in config.
+	// ReaderKey is an optional reader API key which raises the rate limit.
+	// Profile assembly resolves it from the configured environment variable.
 	ReaderKey string
 	// Searcher enables the search tool when non-nil.
 	Searcher Searcher

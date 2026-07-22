@@ -36,6 +36,20 @@ func TestReadSkill(t *testing.T) {
 	}
 }
 
+func TestReadSkillDirectly(t *testing.T) {
+	s := newSkills(t, map[string]string{
+		"database-guide.md": "# Database guide\n\nGround every value.",
+	})
+
+	out, err := s.Read("database-guide.md")
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if !strings.Contains(out, "Ground every value") {
+		t.Fatalf("got %q", out)
+	}
+}
+
 // The model may include the extension; that should not be a failure.
 func TestReadSkillToleratesExtension(t *testing.T) {
 	s := newSkills(t, map[string]string{"database-guide.md": "# Database guide\n"})

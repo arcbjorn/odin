@@ -35,7 +35,7 @@ type Profile struct {
 	// Resolved paths. Every one is inside Dir.
 	SkillsDir string
 	NotesDir  string
-	DBPath string
+	DBPath    string
 	AuthDir   string
 }
 
@@ -49,8 +49,8 @@ type Config struct {
 	Providers []ProviderConfig
 
 	// Timezone is informational only. The database's settings table is the
-	// source of truth and is switchable live when travelling; this exists so
-	// `odin status` can flag a mismatch.
+	// source of truth; Odin loads it at startup. This exists so `odin status`
+	// can flag a mismatch before an operator restarts after changing zones.
 	Timezone string
 
 	MaxTurns  int
@@ -131,11 +131,11 @@ type TelegramConfig struct {
 // knownToolsets is the closed set of toolset names. A typo in config.toml
 // must fail at load, not silently omit a capability at 07:00.
 var knownToolsets = map[string]bool{
-	"db": true, // sqlite query + exec against db.sqlite
-	"file":    true, // scoped read/write/list under notes/
-	"skills":  true, // read markdown skill documents
-	"web":     true, // fetch + search
-	"shell":   true, // maint only; not implemented yet
+	"db":     true, // sqlite query + exec against db.sqlite
+	"file":   true, // scoped read/write/list under notes/
+	"skills": true, // read markdown skill documents
+	"web":    true, // fetch + search
+	"shell":  true, // ops shell; confine its service user and credentials
 }
 
 // Load reads and validates the profile named by name under root.
@@ -168,7 +168,7 @@ func Load(root, name string) (*Profile, error) {
 		Dir:       dir,
 		SkillsDir: filepath.Join(dir, "skills"),
 		NotesDir:  filepath.Join(dir, "notes"),
-		DBPath: filepath.Join(dir, "db.sqlite"),
+		DBPath:    filepath.Join(dir, "db.sqlite"),
 		AuthDir:   filepath.Join(dir, "auth"),
 	}
 

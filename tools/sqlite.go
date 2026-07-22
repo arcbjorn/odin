@@ -35,8 +35,8 @@ type SQLite struct {
 
 // NewSQLite opens the database and loads its timezone.
 //
-// The timezone lives in the DB rather than config because it is switchable
-// live when travelling — the agent updates one row and "today" moves with it.
+// The timezone lives in the DB rather than config because it defines what
+// "today" means for every query. Odin loads it when the profile starts.
 func NewSQLite(db *sql.DB) (*SQLite, error) {
 	s := &SQLite{db: db, tz: time.UTC}
 

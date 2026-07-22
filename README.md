@@ -17,9 +17,9 @@ ever-growing surface, and a scheduler that can't pollute the model's context.
   fallback.
 - **Profiles.** Each agent is a directory (persona, tools, jobs, SQLite state).
   A tool absent from the allowlist is never constructed — it cannot be called.
-- **In-process scheduler.** Cron jobs fire on the database's own timezone
-  (switchable live), so a timezone change moves every job. No `cron` in the DB,
-  no per-job model snapshots to drift out of sync.
+- **In-process scheduler.** Cron jobs fire on the database's own timezone,
+  independent of host time. Restart Odin after changing it to move every job.
+  No `cron` in the DB, no per-job model snapshots to drift out of sync.
 - **Guardrails.** A repeated failing tool call is stopped after 3 attempts, not
   looped. Tool schemas are capped small so weaker models can fill them.
 - **No context pollution.** The system prompt is assembled once and stays

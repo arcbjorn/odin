@@ -3,7 +3,12 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/arcbjorn/odin/profile"
+	"github.com/arcbjorn/odin/sched"
+	"github.com/arcbjorn/odin/tools"
 )
 
 func TestDiagnosticProviderSelectionIgnoresOtherCredentials(t *testing.T) {
@@ -45,5 +50,35 @@ api_key_env = "SECOND_KEY"
 	defer cleanup()
 	if len(providers) != 1 || providers[0].Name() != "second/second-model" {
 		t.Fatalf("providers = %v", providers)
+	}
+}
+
+func TestBuildJobPromptLoadsDeclaredSkills(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "database-guide.md"), []byte("# Guide\n\nUse real rows."), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	skills, err := tools.NewSkills(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	prompt, err := buildJobPrompt(&profile.Runtime{Skills: skills}, sched.Job{
+		Name: "Brief", Prompt: "Write the brief.", Skills: []string{"database-guide"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(prompt, "Use real rows.") || !strings.Contains(prompt, "Write the brief.") {
+		t.Fatalf("prompt did not contain skill and job:\n%s", prompt)
+	}
+}
+
+func TestBuildJobPromptRejectsUnavailableSkillToolset(t *testing.T) {
+	_, err := buildJobPrompt(&profile.Runtime{}, sched.Job{
+		Name: "Brief", Prompt: "Write the brief.", Skills: []string{"database-guide"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "toolset is disabled") {
+		t.Fatalf("expected disabled toolset error, got %v", err)
 	}
 }

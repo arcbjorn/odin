@@ -110,9 +110,10 @@ func New(cfg Config) (*Watchdog, error) {
 // by importing the type, so a change to the agent's internals surfaces here
 // as a missing field instead of silently coupling the two.
 type schedulerState map[string]struct {
-	At      time.Time `json:"at"`
-	Error   string    `json:"error,omitempty"`
-	Skipped bool      `json:"skipped,omitempty"`
+	At       time.Time `json:"at"`
+	Timezone string    `json:"timezone,omitempty"`
+	Error    string    `json:"error,omitempty"`
+	Skipped  bool      `json:"skipped,omitempty"`
 }
 
 // jobManifest is the minimum needed to know what should have run.
@@ -184,7 +185,19 @@ func (w *Watchdog) Check() ([]Finding, error) {
 
 		// The core check: a job whose schedule has come and gone without a
 		// run. This is what silence looks like from the outside.
-		due, err := nextDue(m.Schedule, rec.At)
+		after := rec.At
+		if rec.Timezone != "" {
+			loc, err := time.LoadLocation(rec.Timezone)
+			if err != nil {
+				findings = append(findings, Finding{
+					Job:     m.Name,
+					Problem: fmt.Sprintf("invalid recorded timezone %q", rec.Timezone),
+				})
+				continue
+			}
+			after = rec.At.In(loc)
+		}
+		due, err := nextDue(m.Schedule, after)
 		if err != nil {
 			findings = append(findings, Finding{
 				Job:     m.Name,

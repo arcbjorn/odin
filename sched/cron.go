@@ -1,11 +1,10 @@
 // Package sched runs jobs on a wall-clock schedule in the agent's own process.
 //
-// Why in-process rather than systemd timers: the database's timezone is
-// switchable live for travel, and systemd resolves timers against the host
-// clock. One row change would silently leave every timer an hour wrong, which
-// is precisely the class of quiet failure this agent must not have. Keeping
-// the clock here means "local time" always means the same thing the database
-// means, and next-run state is queryable rather than parsed out of systemctl.
+// Why in-process rather than systemd timers: the profile timezone can differ
+// from the host clock and changes when the user travels. Odin loads it from the
+// database at startup; after an operator changes it and restarts Odin, every
+// job moves together. Next-run state is also queryable rather than parsed out
+// of systemctl.
 package sched
 
 import (

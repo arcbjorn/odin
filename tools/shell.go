@@ -16,11 +16,13 @@ import (
 //
 // It is a deliberately thin primitive: `sh -c <command>`, a timeout, and an
 // output cap. It contains no allowlist and no command parsing on purpose. The
-// security boundary is the operating system — this toolset is meant to run as
-// an unprivileged, read-only service user whose kubeconfig is a read-only
-// ServiceAccount. Encoding "safe commands" in application logic is brittle and
-// gives a false sense of safety; a read-only OS user cannot mutate the cluster
-// no matter what string the model produces, and RBAC refuses the write itself.
+// security boundary is the operating system and Kubernetes RBAC — this toolset
+// is meant to run as an unprivileged service user whose host filesystem view
+// and kubeconfig are read-only. Encoding "safe commands" in application logic
+// is brittle and gives a false sense of safety. The service account refuses
+// cluster writes, while systemd limits host writes to explicitly owned paths.
+// Network side effects are not prevented, so the profile prompt must still
+// prohibit mutating commands.
 //
 // It follows that this toolset must only ever be enabled for a profile whose
 // service user is suitably confined. Enabling it for a user with write access
@@ -62,11 +64,11 @@ func (s *Shell) Tool() agent.Tool {
 	return agent.Tool{
 		Def: model.Tool{
 			Name: "shell",
-			Description: "Run a read-only shell command and return combined stdout+stderr. " +
+			Description: "Run a shell command for read-only inspection and return combined stdout+stderr. " +
 				"Use for cluster and host inspection: kubectl get/describe/logs, journalctl, " +
-				"df, free, systemctl status, git log/diff. Runs as an unprivileged read-only " +
-				"user, so any mutation (kubectl delete/apply, rm, systemctl restart) is refused " +
-				"by the OS or RBAC — investigate and report, do not attempt to change state.",
+				"df, free, systemctl status, git log/diff. Kubernetes RBAC and systemd confinement " +
+				"protect cluster and host state, but do not make every network or agent-owned path " +
+				"read-only. Investigate and report; do not attempt to change state.",
 			Schema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{

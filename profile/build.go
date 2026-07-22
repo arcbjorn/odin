@@ -73,9 +73,9 @@ func Build(p *Profile, log *slog.Logger) (*Runtime, error) {
 			}
 		}
 
-		// The database's timezone is authoritative and switchable live for
-		// travel; config.toml's is informational. A mismatch means one of the
-		// two is stale, which is worth surfacing before it misfiles a session.
+		// The database's timezone is authoritative and loaded at startup;
+		// config.toml's is informational. A mismatch means one of the two is
+		// stale, which is worth surfacing before it misfiles a session.
 		if p.Config.Timezone != "" && p.Config.Timezone != store.Location().String() {
 			log.Warn("timezone mismatch between config and database; the database wins",
 				"config", p.Config.Timezone, "db", store.Location().String())
