@@ -128,8 +128,13 @@ func Build(p *Profile, log *slog.Logger) (*Runtime, error) {
 	}
 
 	if p.HasToolset("shell") {
-		rt.Close()
-		return nil, fmt.Errorf("toolset \"shell\" is not implemented yet")
+		// A read-only ops primitive whose safety is the OS user it runs as, not
+		// application logic. See tools.Shell. Enable it only for a profile whose
+		// service user is confined (unprivileged, read-only kubeconfig).
+		if err := rt.Tools.Register(tools.NewShell(tools.ShellConfig{}).Tool()); err != nil {
+			rt.Close()
+			return nil, err
+		}
 	}
 
 	loop, err := agent.New(agent.Config{

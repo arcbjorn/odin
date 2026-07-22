@@ -11,8 +11,8 @@ import (
 	"strings"
 	"testing"
 
-	_ "modernc.org/sqlite"
 	"github.com/arcbjorn/odin/model"
+	_ "modernc.org/sqlite"
 )
 
 const minimalConfig = `
@@ -613,7 +613,7 @@ func TestBuildFailsWhenKeyEnvMissing(t *testing.T) {
 	}
 }
 
-func TestUnimplementedToolsetIsRefused(t *testing.T) {
+func TestShellToolsetRegistersShellTool(t *testing.T) {
 	cfg := strings.Replace(minimalConfig, `["db", "skills"]`, `["db", "shell"]`, 1)
 	root := writeProfile(t, "default", cfg, "# General assistant", true, true)
 	t.Setenv("OPENCODE_GO_API_KEY", "test-key")
@@ -622,8 +622,13 @@ func TestUnimplementedToolsetIsRefused(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if _, err := Build(p, slog.New(slog.NewTextHandler(io.Discard, nil))); err == nil {
-		t.Fatal("expected the shell toolset to be refused until implemented")
+	rt, err := Build(p, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("Build with shell toolset: %v", err)
+	}
+	defer rt.Close()
+	if _, ok := rt.Tools.Lookup("shell"); !ok {
+		t.Fatal("shell toolset enabled but shell tool not registered")
 	}
 }
 
