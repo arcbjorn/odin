@@ -37,7 +37,7 @@ func TestFormatMarkdownV2(t *testing.T) {
 	}
 }
 
-func TestTableToBullets(t *testing.T) {
+func TestFormatTablesToCodeBlock(t *testing.T) {
 	in := "Work log\n\n" +
 		"| Day | Project | Hours |\n" +
 		"|-----|---------|------:|\n" +
@@ -45,38 +45,39 @@ func TestTableToBullets(t *testing.T) {
 		"| Fri 10 | New Reach | 5.5 |\n\n" +
 		"14-day total: 74.0 h"
 
-	got := tableToBullets(in)
+	got := formatTables(in)
 
-	// No raw table pipes/delimiter should survive.
-	if strings.Contains(got, "|---") || strings.Contains(got, "| Day |") {
-		t.Fatalf("table markup survived:\n%s", got)
+	// The table is wrapped in a code fence, and the raw delimiter row is gone.
+	if !strings.Contains(got, "```") {
+		t.Fatalf("table not wrapped in a code block:\n%s", got)
 	}
-	// Each row becomes a bold heading + header:value bullets.
-	for _, want := range []string{"**Wed 8**", "• Project: New Reach", "• Hours: 3.0", "**Fri 10**"} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("missing %q in:\n%s", want, got)
-		}
+	if strings.Contains(got, "|---") || strings.Contains(got, "|------:|") {
+		t.Fatalf("delimiter row survived:\n%s", got)
+	}
+	// Columns are padded to a consistent width so they align in monospace.
+	if !strings.Contains(got, "Day     Project    Hours") {
+		t.Fatalf("header not aligned as expected:\n%s", got)
+	}
+	// Right-aligned Hours column (delimiter ended with a colon): 3.0 padded left.
+	if !strings.Contains(got, "New Reach    3.0") {
+		t.Fatalf("hours column not right-aligned:\n%s", got)
 	}
 	// Prose around the table is untouched.
 	if !strings.Contains(got, "Work log") || !strings.Contains(got, "14-day total: 74.0 h") {
 		t.Fatalf("prose corrupted:\n%s", got)
 	}
-	// The heading's own column is not repeated as a bullet.
-	if strings.Contains(got, "• Day: Wed 8") {
-		t.Fatalf("row-label column duplicated as a bullet:\n%s", got)
-	}
 }
 
-// End to end: a table run through the full formatter must be valid MarkdownV2
-// (bold headings) with no leftover pipe rows.
+// End to end: a table run through the full formatter stays a fenced code block
+// (Telegram renders it monospace) with no leftover delimiter row.
 func TestFormatMarkdownV2RendersTable(t *testing.T) {
 	in := "| A | B |\n|---|---|\n| x | y |"
 	got := formatMarkdownV2(in)
+	if !strings.Contains(got, "```") {
+		t.Fatalf("table not a code block: %q", got)
+	}
 	if strings.Contains(got, "|---") {
 		t.Fatalf("delimiter row survived: %q", got)
-	}
-	if !strings.Contains(got, "*x*") { // heading "x" → MarkdownV2 bold
-		t.Fatalf("row heading not bolded: %q", got)
 	}
 }
 

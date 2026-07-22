@@ -4,6 +4,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 // This file converts the CommonMark-ish prose the model writes into Telegram
@@ -58,8 +59,8 @@ func formatMarkdownV2(text string) string {
 	}
 
 	// Telegram has no table syntax; a pipe table renders as escaped-pipe noise.
-	// Rewrite tables to bullet groups before anything else, exactly as Hermes does.
-	text = tableToBullets(text)
+	// Re-render tables as fixed-width code blocks before anything else.
+	text = formatTables(text)
 
 	var stash []string
 	ph := func(v string) string {
@@ -136,12 +137,14 @@ var (
 	reLinkPlain   = regexp.MustCompile(`\[([^\]]+)\]\([^()\s]+\)`)
 )
 
-// --- GFM tables → bullet groups (ported from Hermes convert_table_to_bullets) ---
+// --- GFM tables → monospace code blocks ---
 //
-// Telegram MarkdownV2 has no table syntax and its proportional font destroys any
-// column alignment, so a pipe table is unreadable. Each data row is rewritten as
-// a bold heading (the row's label/first cell) followed by "header: value"
-// bullets, which reflow cleanly on a phone.
+// Telegram MarkdownV2 has no table syntax and its proportional font destroys
+// column alignment, so a pipe table is unreadable as prose. But a fenced code
+// block renders in a fixed-width font that preserves alignment and scrolls
+// horizontally, so re-rendering the table with padded columns inside ``` gives
+// an actual readable grid — which is what people asking for a table want.
+// (Hermes converts to bullets instead; this keeps the table.)
 
 // tableSeparatorRE matches a GFM delimiter row (|---|:--:|...), requiring at
 // least one internal pipe so a lone `---` rule is not treated as a table.
@@ -163,7 +166,7 @@ func splitTableRow(line string) []string {
 	return parts
 }
 
-func tableToBullets(text string) string {
+func formatTables(text string) string {
 	if !strings.Contains(text, "|") || !strings.Contains(text, "-") {
 		return text
 	}
@@ -196,6 +199,11 @@ func tableToBullets(text string) string {
 	return strings.Join(out, "\n")
 }
 
+// renderTableBlock re-renders a GFM table as a fixed-width grid inside a fenced
+// code block: columns padded to their widest cell, right-aligned when the
+// delimiter row marks the column with a trailing colon (numbers read better
+// right-aligned). The ``` fence makes Telegram use a monospace font so the
+// padding actually lines up.
 func renderTableBlock(block []string) string {
 	if len(block) < 3 {
 		return strings.Join(block, "\n")
@@ -204,46 +212,77 @@ func renderTableBlock(block []string) string {
 	if len(headers) < 2 {
 		return strings.Join(block, "\n")
 	}
-	// A leading row-label column shows up as one more cell than there are headers.
-	hasRowLabel := len(splitTableRow(block[2])) == len(headers)+1
+	ncol := len(headers)
+	rightAlign := columnAlignments(block[1], ncol)
 
-	groups := make([]string, 0, len(block)-2)
-	for idx, row := range block[2:] {
-		cells := splitTableRow(row)
-		var heading string
-		var data []string
-		if hasRowLabel {
-			if len(cells) > 0 && cells[0] != "" {
-				heading = cells[0]
-			} else {
-				heading = "Row " + strconv.Itoa(idx+1)
-			}
-			data = cells[1:]
-		} else {
-			heading = "Row " + strconv.Itoa(idx+1)
-			for _, c := range cells {
-				if c != "" {
-					heading = c
-					break
-				}
-			}
-			data = cells
-		}
-		for len(data) < len(headers) {
-			data = append(data, "")
-		}
-		data = data[:len(headers)]
-
-		lines := []string{"**" + heading + "**"}
-		for k, header := range headers {
-			if !hasRowLabel && data[k] == heading {
-				continue // the heading already stands in for its own column
-			}
-			lines = append(lines, "• "+header+": "+data[k])
-		}
-		groups = append(groups, strings.Join(lines, "\n"))
+	rows := [][]string{headers}
+	for _, r := range block[2:] {
+		rows = append(rows, splitTableRow(r))
 	}
-	return strings.Join(groups, "\n\n")
+	// Normalize every row to the header column count.
+	for i := range rows {
+		for len(rows[i]) < ncol {
+			rows[i] = append(rows[i], "")
+		}
+		rows[i] = rows[i][:ncol]
+	}
+	// Column widths by rune count (so multibyte cells align).
+	width := make([]int, ncol)
+	for _, row := range rows {
+		for c, cell := range row {
+			if n := utf8.RuneCountInString(cell); n > width[c] {
+				width[c] = n
+			}
+		}
+	}
+
+	pad := func(s string, c int) string {
+		gap := width[c] - utf8.RuneCountInString(s)
+		if gap < 0 {
+			gap = 0
+		}
+		if rightAlign[c] {
+			return strings.Repeat(" ", gap) + s
+		}
+		return s + strings.Repeat(" ", gap)
+	}
+	renderRow := func(cells []string) string {
+		parts := make([]string, ncol)
+		for c := range cells {
+			parts[c] = pad(cells[c], c)
+		}
+		return strings.TrimRight(strings.Join(parts, "  "), " ")
+	}
+
+	var b strings.Builder
+	b.WriteString("```\n")
+	b.WriteString(renderRow(rows[0]))
+	b.WriteByte('\n')
+	rule := make([]string, ncol)
+	for c := range rule {
+		rule[c] = strings.Repeat("-", width[c])
+	}
+	b.WriteString(strings.Join(rule, "  "))
+	for _, row := range rows[1:] {
+		b.WriteByte('\n')
+		b.WriteString(renderRow(row))
+	}
+	b.WriteString("\n```")
+	return b.String()
+}
+
+// columnAlignments reads a GFM delimiter row and reports which columns are
+// right-aligned (delimiter ends with a colon, e.g. `---:`).
+func columnAlignments(delimiter string, ncol int) []bool {
+	right := make([]bool, ncol)
+	for c, cell := range splitTableRow(delimiter) {
+		if c >= ncol {
+			break
+		}
+		cell = strings.TrimSpace(cell)
+		right[c] = strings.HasSuffix(cell, ":") && !strings.HasPrefix(cell, ":")
+	}
+	return right
 }
 
 // stripMarkdown removes Markdown markers to produce clean plain text for the
@@ -251,7 +290,7 @@ func renderTableBlock(block []string) string {
 // asterisks and backticks. It runs on the original prose, not the MarkdownV2
 // conversion, so it is a straightforward marker strip.
 func stripMarkdown(text string) string {
-	text = tableToBullets(text)
+	text = formatTables(text)
 	text = reFencePlain.ReplaceAllString(text, "$1")
 	text = reInlinePlain.ReplaceAllString(text, "$1")
 	text = reLinkPlain.ReplaceAllString(text, "$1")
