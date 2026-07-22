@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/arcbjorn/odin/model"
@@ -60,6 +61,10 @@ type Telegram struct {
 	// maxTrackedMessages. Guarded by mu.
 	deletable map[int64][]int64
 	offset    int64
+
+	// richDisabled latches once sendRichMessage proves unavailable, so later
+	// sends skip the doomed rich attempt and go straight to plain text.
+	richDisabled atomic.Bool
 }
 
 // session is one chat's conversation state.
@@ -488,47 +493,46 @@ func (t *Telegram) send(ctx context.Context, chatID int64, text string) {
 	}
 }
 
-// sendChunk delivers one chunk, preferring rich formatting.
-//
-// The model writes CommonMark; formatMarkdownV2 converts and escapes it so
-// bold/italics/code/links render. Escaping makes a rejection unlikely, but if
-// Telegram still refuses the entities we resend as clean plain text — a
-// readable message always beats a dropped one. This is why the old path
-// avoided parse_mode entirely; the fallback removes that reason.
+// sendChunk delivers one chunk via Bot API 10.1 sendRichMessage, which renders
+// the model's raw Markdown natively — bold, lists, code, and the tables that
+// MarkdownV2 cannot express. richMarkdown only fixes soft breaks and table
+// alignment; nothing is escaped. If the endpoint is unavailable (an older
+// server), it latches off and every send after uses plain text.
 func (t *Telegram) sendChunk(ctx context.Context, chatID int64, chunk string) error {
-	rich := url.Values{
-		"chat_id":                  {fmt.Sprint(chatID)},
-		"text":                     {formatMarkdownV2(chunk)},
-		"parse_mode":               {"MarkdownV2"},
-		"disable_web_page_preview": {"false"},
+	if !t.richDisabled.Load() {
+		payload, _ := json.Marshal(map[string]string{"markdown": richMarkdown(chunk)})
+		res, err := t.call(ctx, "sendRichMessage", url.Values{
+			"chat_id":      {fmt.Sprint(chatID)},
+			"rich_message": {string(payload)},
+		})
+		if err == nil {
+			t.trackSent(chatID, res)
+			return nil
+		}
+		if isRichUnavailable(err) {
+			t.richDisabled.Store(true)
+		}
+		t.log.Warn("sendRichMessage failed, sending plain text", "chat_id", chatID, "error", err)
 	}
-	res, err := t.call(ctx, "sendMessage", rich)
-	if err == nil {
-		t.trackSent(chatID, res)
-		return nil
-	}
-	if !isParseError(err) {
-		return err
-	}
-	t.log.Warn("markdownv2 rejected, resending as plain text", "chat_id", chatID, "error", err)
-	plain := url.Values{
-		"chat_id":                  {fmt.Sprint(chatID)},
-		"text":                     {stripMarkdown(chunk)},
-		"disable_web_page_preview": {"false"},
-	}
-	res, err = t.call(ctx, "sendMessage", plain)
+
+	res, err := t.call(ctx, "sendMessage", url.Values{
+		"chat_id": {fmt.Sprint(chatID)},
+		"text":    {chunk},
+	})
 	if err == nil {
 		t.trackSent(chatID, res)
 	}
 	return err
 }
 
-// isParseError reports whether a sendMessage failure is Telegram rejecting the
-// MarkdownV2 entities (as opposed to a network or auth fault), so only those
-// are retried as plain text. Telegram phrases these as "can't parse entities".
-func isParseError(err error) bool {
+// isRichUnavailable reports whether the error means the sendRichMessage
+// endpoint does not exist (an older Bot API), as opposed to a per-message or
+// transient failure — only then is it worth latching rich off for good.
+func isRichUnavailable(err error) bool {
 	s := strings.ToLower(err.Error())
-	return strings.Contains(s, "parse entities") || strings.Contains(s, "can't parse")
+	return strings.Contains(s, "not found") ||
+		strings.Contains(s, "no such method") ||
+		strings.Contains(s, "unknown method")
 }
 
 func (t *Telegram) sendChatAction(ctx context.Context, chatID int64, action string) {

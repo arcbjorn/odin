@@ -71,6 +71,18 @@ func (f *fakeTelegram) server(t *testing.T) *httptest.Server {
 		w.Header().Set("Content-Type", "application/json")
 
 		switch {
+		case strings.HasSuffix(r.URL.Path, "/sendRichMessage"):
+			var rm struct {
+				Markdown string `json:"markdown"`
+			}
+			json.Unmarshal([]byte(r.FormValue("rich_message")), &rm)
+			f.mu.Lock()
+			f.sent = append(f.sent, rm.Markdown)
+			f.nextMsgID++
+			id := f.nextMsgID
+			f.mu.Unlock()
+			fmt.Fprintf(w, `{"ok":true,"result":{"message_id":%d}}`, id)
+			return
 		case strings.HasSuffix(r.URL.Path, "/sendMessage"):
 			f.mu.Lock()
 			f.sent = append(f.sent, r.FormValue("text"))
@@ -230,8 +242,8 @@ func TestAuthorizedUserGetsReply(t *testing.T) {
 		t.Fatal("no reply sent")
 	}
 	msgs := fake.messages()
-	// Replies now ship as MarkdownV2, so the trailing period is escaped.
-	if msgs[len(msgs)-1] != `Task saved\.` {
+	// Replies ship as raw markdown via sendRichMessage — no escaping.
+	if msgs[len(msgs)-1] != "Task saved." {
 		t.Fatalf("got %q", msgs[len(msgs)-1])
 	}
 }
