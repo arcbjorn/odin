@@ -396,19 +396,50 @@ func (t *Telegram) send(ctx context.Context, chatID int64, text string) {
 		return
 	}
 	for _, chunk := range splitMessage(text, maxMessageRunes) {
-		params := url.Values{
-			"chat_id": {fmt.Sprint(chatID)},
-			"text":    {chunk},
-			// Deliberately no parse_mode: the model writes prose with
-			// underscores and asterisks, and Markdown parsing would reject
-			// the message outright on an unbalanced character.
-			"disable_web_page_preview": {"false"},
-		}
-		if _, err := t.call(ctx, "sendMessage", params); err != nil {
+		if err := t.sendChunk(ctx, chatID, chunk); err != nil {
 			t.log.Error("send failed", "chat_id", chatID, "error", err)
 			return
 		}
 	}
+}
+
+// sendChunk delivers one chunk, preferring rich formatting.
+//
+// The model writes CommonMark; formatMarkdownV2 converts and escapes it so
+// bold/italics/code/links render. Escaping makes a rejection unlikely, but if
+// Telegram still refuses the entities we resend as clean plain text — a
+// readable message always beats a dropped one. This is why the old path
+// avoided parse_mode entirely; the fallback removes that reason.
+func (t *Telegram) sendChunk(ctx context.Context, chatID int64, chunk string) error {
+	rich := url.Values{
+		"chat_id":                  {fmt.Sprint(chatID)},
+		"text":                     {formatMarkdownV2(chunk)},
+		"parse_mode":               {"MarkdownV2"},
+		"disable_web_page_preview": {"false"},
+	}
+	_, err := t.call(ctx, "sendMessage", rich)
+	if err == nil {
+		return nil
+	}
+	if !isParseError(err) {
+		return err
+	}
+	t.log.Warn("markdownv2 rejected, resending as plain text", "chat_id", chatID, "error", err)
+	plain := url.Values{
+		"chat_id":                  {fmt.Sprint(chatID)},
+		"text":                     {stripMarkdown(chunk)},
+		"disable_web_page_preview": {"false"},
+	}
+	_, err = t.call(ctx, "sendMessage", plain)
+	return err
+}
+
+// isParseError reports whether a sendMessage failure is Telegram rejecting the
+// MarkdownV2 entities (as opposed to a network or auth fault), so only those
+// are retried as plain text. Telegram phrases these as "can't parse entities".
+func isParseError(err error) bool {
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "parse entities") || strings.Contains(s, "can't parse")
 }
 
 func (t *Telegram) sendChatAction(ctx context.Context, chatID int64, action string) {

@@ -211,7 +211,8 @@ func TestAuthorizedUserGetsReply(t *testing.T) {
 		t.Fatal("no reply sent")
 	}
 	msgs := fake.messages()
-	if msgs[len(msgs)-1] != "Task saved." {
+	// Replies now ship as MarkdownV2, so the trailing period is escaped.
+	if msgs[len(msgs)-1] != `Task saved\.` {
 		t.Fatalf("got %q", msgs[len(msgs)-1])
 	}
 }
