@@ -49,9 +49,17 @@ type Telegram struct {
 	// context is not still in the prompt at midnight.
 	sessionTTL time.Duration
 
+	// modelChain is the configured provider chain ("name/model" each), primary
+	// first. Static — reported by /model, never mutated.
+	modelChain []string
+
 	mu       sync.Mutex
 	sessions map[int64]*session
-	offset   int64
+	// deletable tracks message IDs per chat that /new may delete to clear the
+	// visible chat. Populated as messages come and go; bounded by
+	// maxTrackedMessages. Guarded by mu.
+	deletable map[int64][]int64
+	offset    int64
 }
 
 // session is one chat's conversation state.
@@ -100,6 +108,10 @@ type TelegramConfig struct {
 	Agent      Agent
 	Logger     *slog.Logger
 	SessionTTL time.Duration
+
+	// ModelChain is the configured provider chain, "name/model" each, primary
+	// first. Reported by the /model command.
+	ModelChain []string
 }
 
 // NewTelegram builds the gateway.
@@ -134,7 +146,9 @@ func NewTelegram(cfg TelegramConfig) (*Telegram, error) {
 		log:        cfg.Logger,
 		baseURL:    telegramAPI,
 		sessionTTL: ttl,
+		modelChain: cfg.ModelChain,
 		sessions:   make(map[int64]*session),
+		deletable:  make(map[int64][]int64),
 		// Slightly longer than the poll timeout so the request itself does not
 		// time out mid-long-poll.
 		http: &http.Client{Timeout: 70 * time.Second},
@@ -168,7 +182,14 @@ type apiResponse struct {
 // the commands are compiled in — so it only changes across deploys.
 var botCommands = []botCommand{
 	{Command: "new", Description: "Clear the chat and start fresh"},
+	{Command: "model", Description: "Show the running model and fallbacks"},
 }
+
+// maxTrackedMessages bounds the per-chat list of message IDs /new may delete,
+// so a long-running chat that never clears cannot grow it without limit. The
+// oldest are dropped first — and Telegram refuses to delete anything older than
+// 48h anyway, so the tail is the only useful part.
+const maxTrackedMessages = 500
 
 type botCommand struct {
 	Command     string `json:"command"`
@@ -270,6 +291,9 @@ func (t *Telegram) handle(ctx context.Context, u update) {
 		return
 	}
 
+	// Track the incoming message so /new can delete it along with the rest.
+	t.track(msg.Chat.ID, msg.MessageID)
+
 	go t.respond(ctx, msg.Chat.ID, msg.Text)
 }
 
@@ -285,10 +309,19 @@ func (t *Telegram) respond(ctx context.Context, chatID int64, text string) {
 	t.sendChatAction(ctx, chatID, "typing")
 
 	if cmd := strings.TrimSpace(text); strings.HasPrefix(cmd, "/") {
-		if reply, handled := t.command(chatID, cmd); handled {
-			t.send(ctx, chatID, reply)
+		switch strings.Fields(cmd)[0] {
+		// /new is the single "clear the chat" command; /start is what Telegram
+		// sends when a chat is first opened. Both delete the tracked messages
+		// and reset the conversation.
+		case "/start", "/new":
+			t.clearChat(ctx, chatID)
+			t.send(ctx, chatID, "Cleared.")
+			return
+		case "/model":
+			t.send(ctx, chatID, t.modelReport())
 			return
 		}
+		// Any other slash command falls through to the agent as ordinary input.
 	}
 
 	// Work on a copy: the turn runs outside the session lock because it can
@@ -357,20 +390,71 @@ func sameCommands(a, b []botCommand) bool {
 	return true
 }
 
-// command handles gateway-local slash commands. Everything else falls through
-// to the agent, so unknown slash commands are ordinary input.
-func (t *Telegram) command(chatID int64, cmd string) (string, bool) {
-	switch strings.Fields(cmd)[0] {
-	// /new is the single "clear the chat" command; /start is what Telegram
-	// sends when a chat is first opened, and clears too.
-	case "/start", "/new":
-		t.mu.Lock()
-		delete(t.sessions, chatID)
-		t.mu.Unlock()
-		return "Fresh session.", true
-	default:
-		return "", false
+// clearChat deletes the tracked messages and resets the conversation. Telegram
+// only lets a bot delete messages from the last 48h, and only ones it has the
+// ID for (since this process started), so this clears the recent visible chat
+// rather than the entire history — the most a bot can do. Deletion is best
+// effort: a message too old or already gone is skipped silently.
+func (t *Telegram) clearChat(ctx context.Context, chatID int64) {
+	t.mu.Lock()
+	ids := t.deletable[chatID]
+	delete(t.deletable, chatID)
+	delete(t.sessions, chatID)
+	t.mu.Unlock()
+
+	for _, id := range ids {
+		t.deleteMessage(ctx, chatID, id)
 	}
+}
+
+func (t *Telegram) deleteMessage(ctx context.Context, chatID, msgID int64) {
+	params := url.Values{
+		"chat_id":    {fmt.Sprint(chatID)},
+		"message_id": {fmt.Sprint(msgID)},
+	}
+	if _, err := t.call(ctx, "deleteMessage", params); err != nil {
+		// Expected for anything older than 48h or already deleted.
+		t.log.Debug("delete message skipped", "chat_id", chatID, "message_id", msgID, "error", err)
+	}
+}
+
+// track records a message ID as deletable by a future /new, bounding the list.
+func (t *Telegram) track(chatID, msgID int64) {
+	if msgID == 0 {
+		return
+	}
+	t.mu.Lock()
+	ids := append(t.deletable[chatID], msgID)
+	if len(ids) > maxTrackedMessages {
+		ids = ids[len(ids)-maxTrackedMessages:]
+	}
+	t.deletable[chatID] = ids
+	t.mu.Unlock()
+}
+
+// trackSent records the ID of a message the bot just sent, from the
+// sendMessage response, so /new can delete it too.
+func (t *Telegram) trackSent(chatID int64, result json.RawMessage) {
+	var m struct {
+		MessageID int64 `json:"message_id"`
+	}
+	if err := json.Unmarshal(result, &m); err == nil {
+		t.track(chatID, m.MessageID)
+	}
+}
+
+// modelReport describes the configured provider chain for /model: which model
+// runs and what it falls back to.
+func (t *Telegram) modelReport() string {
+	if len(t.modelChain) == 0 {
+		return "No model configured."
+	}
+	if len(t.modelChain) == 1 {
+		return "Model: " + t.modelChain[0] + "\n(no fallback)"
+	}
+	return "Model: " + t.modelChain[0] +
+		"\nFallback: " + strings.Join(t.modelChain[1:], " → ") +
+		"\n(restarts from the primary each turn; falls back on error)"
 }
 
 func (t *Telegram) session(chatID int64) *session {
@@ -418,8 +502,9 @@ func (t *Telegram) sendChunk(ctx context.Context, chatID int64, chunk string) er
 		"parse_mode":               {"MarkdownV2"},
 		"disable_web_page_preview": {"false"},
 	}
-	_, err := t.call(ctx, "sendMessage", rich)
+	res, err := t.call(ctx, "sendMessage", rich)
 	if err == nil {
+		t.trackSent(chatID, res)
 		return nil
 	}
 	if !isParseError(err) {
@@ -431,7 +516,10 @@ func (t *Telegram) sendChunk(ctx context.Context, chatID int64, chunk string) er
 		"text":                     {stripMarkdown(chunk)},
 		"disable_web_page_preview": {"false"},
 	}
-	_, err = t.call(ctx, "sendMessage", plain)
+	res, err = t.call(ctx, "sendMessage", plain)
+	if err == nil {
+		t.trackSent(chatID, res)
+	}
 	return err
 }
 

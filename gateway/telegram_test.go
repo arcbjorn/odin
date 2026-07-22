@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -54,8 +56,10 @@ func (f *fakeAgent) callCount() int {
 type fakeTelegram struct {
 	mu          sync.Mutex
 	sent        []string
-	setCommands int    // times setMyCommands was called
-	getResult   string // what getMyCommands returns (default: empty set)
+	deleted     []int64 // message_ids passed to deleteMessage
+	nextMsgID   int64   // monotonic id handed back by sendMessage
+	setCommands int     // times setMyCommands was called
+	getResult   string  // what getMyCommands returns (default: empty set)
 }
 
 func (f *fakeTelegram) server(t *testing.T) *httptest.Server {
@@ -70,6 +74,15 @@ func (f *fakeTelegram) server(t *testing.T) *httptest.Server {
 		case strings.HasSuffix(r.URL.Path, "/sendMessage"):
 			f.mu.Lock()
 			f.sent = append(f.sent, r.FormValue("text"))
+			f.nextMsgID++
+			id := f.nextMsgID
+			f.mu.Unlock()
+			fmt.Fprintf(w, `{"ok":true,"result":{"message_id":%d}}`, id)
+			return
+		case strings.HasSuffix(r.URL.Path, "/deleteMessage"):
+			id, _ := strconv.ParseInt(r.FormValue("message_id"), 10, 64)
+			f.mu.Lock()
+			f.deleted = append(f.deleted, id)
 			f.mu.Unlock()
 		case strings.HasSuffix(r.URL.Path, "/getMyCommands"):
 			f.mu.Lock()
@@ -101,6 +114,12 @@ func (f *fakeTelegram) messages() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]string(nil), f.sent...)
+}
+
+func (f *fakeTelegram) deletedIDs() []int64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]int64(nil), f.deleted...)
 }
 
 // newGateway wires a gateway at a fake API endpoint.
@@ -323,7 +342,7 @@ func TestNewCommandClearsHistory(t *testing.T) {
 	g.respond(ctx, 1, "fresh start")
 
 	msgs := fake.messages()
-	if len(msgs) < 2 || !strings.Contains(msgs[1], "Fresh session") {
+	if len(msgs) < 2 || !strings.Contains(msgs[1], "Cleared") {
 		t.Fatalf("clear not acknowledged: %v", msgs)
 	}
 
@@ -335,6 +354,47 @@ func TestNewCommandClearsHistory(t *testing.T) {
 	}
 	if len(agent.calls[1]) != 1 {
 		t.Fatalf("history survived reset: %+v", agent.calls[1])
+	}
+	// The prior reply was tracked and must have been deleted to clear the chat.
+	if len(fake.deletedIDs()) == 0 {
+		t.Fatal("/new did not delete any tracked messages")
+	}
+}
+
+// clearChat must delete every tracked message and empty the tracking list.
+func TestClearChatDeletesTrackedMessages(t *testing.T) {
+	g, fake := newGateway(t, &fakeAgent{reply: "ack"}, []int64{1})
+
+	g.track(1, 10)
+	g.track(1, 11)
+	g.clearChat(context.Background(), 1)
+
+	if got := fake.deletedIDs(); len(got) != 2 || got[0] != 10 || got[1] != 11 {
+		t.Fatalf("deleted = %v, want [10 11]", got)
+	}
+	// A second clear finds nothing left to delete.
+	g.clearChat(context.Background(), 1)
+	if got := fake.deletedIDs(); len(got) != 2 {
+		t.Fatalf("tracking not cleared: deleted = %v", got)
+	}
+}
+
+// /model reports the running model and its fallbacks, without reaching the agent.
+func TestModelCommand(t *testing.T) {
+	agent := &fakeAgent{reply: "x"}
+	g, fake := newGateway(t, agent, []int64{1})
+	g.modelChain = []string{"xai/grok-4.5", "opencode-go/glm-5.2", "codex/gpt-5.6"}
+
+	g.respond(context.Background(), 1, "/model")
+
+	msgs := fake.messages()
+	last := msgs[len(msgs)-1]
+	// Rendered as MarkdownV2, so match specials-free substrings.
+	if !strings.Contains(last, "grok") || !strings.Contains(last, "Fallback") || !strings.Contains(last, "glm") {
+		t.Fatalf("model report missing content: %q", last)
+	}
+	if agent.callCount() != 0 {
+		t.Fatal("/model should be handled by the gateway, not reach the agent")
 	}
 }
 

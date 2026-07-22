@@ -365,9 +365,9 @@ func cmdInit(args []string) error {
 	}
 
 	dir, err := profile.Scaffold(profile.ScaffoldOptions{
-		Root:          common.root,
-		Name:          common.profile,
-		Timezone:      *timezone,
+		Root:       common.root,
+		Name:       common.profile,
+		Timezone:   *timezone,
 		SchemaPath: *schema,
 	})
 	if err != nil {
@@ -893,11 +893,16 @@ func buildGateway(rt *profile.Runtime, log *slog.Logger) (*gateway.Telegram, err
 	if token == "" {
 		return nil, fmt.Errorf("%s is not set in the environment", cfg.TokenEnv)
 	}
+	chain := make([]string, 0, len(rt.Profile.Config.Providers))
+	for _, pc := range rt.Profile.Config.Providers {
+		chain = append(chain, pc.Name+"/"+pc.Model)
+	}
 	return gateway.NewTelegram(gateway.TelegramConfig{
 		Token:        token,
 		AllowedUsers: cfg.AllowedUsers,
 		Agent:        loopAgent{rt.Loop},
 		Logger:       log,
+		ModelChain:   chain,
 	})
 }
 
