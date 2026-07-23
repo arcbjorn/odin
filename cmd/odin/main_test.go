@@ -1,10 +1,13 @@
 package main
 
 import (
+	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/arcbjorn/odin/profile"
 	"github.com/arcbjorn/odin/sched"
@@ -19,6 +22,7 @@ func TestDiagnosticProviderSelectionIgnoresOtherCredentials(t *testing.T) {
 	}
 	config := `
 toolsets = ["file"]
+timezone = "UTC"
 
 [[providers]]
 kind = "openai"
@@ -50,6 +54,36 @@ api_key_env = "SECOND_KEY"
 	defer cleanup()
 	if len(providers) != 1 || providers[0].Name() != "second/second-model" {
 		t.Fatalf("providers = %v", providers)
+	}
+}
+
+func TestSchedulerDoesNotRequireDatabaseToolset(t *testing.T) {
+	dir := t.TempDir()
+	jobsDir := filepath.Join(dir, "jobs")
+	if err := os.MkdirAll(jobsDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(jobsDir, "jobs.toml"), []byte(`[[job]]
+name = "Ping"
+schedule = "0 7 * * *"
+prompt = "ping.md"
+enabled = true
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(jobsDir, "ping.md"), []byte("Report."), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rt := &profile.Runtime{
+		Profile:  &profile.Profile{Dir: dir},
+		Location: time.UTC,
+	}
+	scheduler, err := buildScheduler(rt, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if scheduler == nil {
+		t.Fatal("scheduler was not built without a database toolset")
 	}
 }
 
