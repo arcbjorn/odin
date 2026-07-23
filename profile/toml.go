@@ -7,7 +7,7 @@ import (
 )
 
 // parseConfig reads the subset of TOML that config.toml uses: top-level
-// key/value pairs, a [telegram] table, and repeated [[providers]] tables.
+// key/value pairs, small named tables, and repeated [[providers]] tables.
 //
 // Hand-rolled rather than pulled in as a dependency. The grammar here is a few
 // dozen lines and fully covered by tests; a general TOML library would add a
@@ -38,7 +38,7 @@ func parseConfig(src string) (Config, error) {
 		if strings.HasPrefix(line, "[") {
 			section = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(line, "["), "]"))
 			switch section {
-			case "telegram", "agent", "web":
+			case "telegram", "agent", "web", "database":
 			default:
 				return cfg, fmt.Errorf("line %d: unknown table [%s]", lineNo, section)
 			}
@@ -75,6 +75,12 @@ func assign(cfg *Config, section, key, value string, lineNo int) error {
 				return fmt.Errorf("line %d: timezone: %w", lineNo, err)
 			}
 			cfg.Timezone = s
+		case "system_files":
+			list, err := parseStringArray(value)
+			if err != nil {
+				return fmt.Errorf("line %d: system_files: %w", lineNo, err)
+			}
+			cfg.SystemFiles = list
 		default:
 			return fmt.Errorf("line %d: unknown key %q", lineNo, key)
 		}
@@ -125,6 +131,18 @@ func assign(cfg *Config, section, key, value string, lineNo int) error {
 			cfg.Web.SearchURL = s
 		default:
 			return fmt.Errorf("line %d: unknown key %q in [web]", lineNo, key)
+		}
+
+	case "database":
+		switch key {
+		case "max_affected_rows":
+			n, err := strconv.ParseInt(value, 10, 64)
+			if err != nil {
+				return fmt.Errorf("line %d: max_affected_rows: %w", lineNo, err)
+			}
+			cfg.Database.MaxAffectedRows = n
+		default:
+			return fmt.Errorf("line %d: unknown key %q in [database]", lineNo, key)
 		}
 
 	case "telegram":

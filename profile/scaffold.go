@@ -14,9 +14,7 @@ type ScaffoldOptions struct {
 	Root string
 	Name string
 
-	// Timezone seeds the database's settings table. This is the value that
-	// defines "today" for the whole agent, so it is asked for rather than
-	// guessed — a wrong zone misfiles every late-night session.
+	// Timezone is the committed default for scheduling and :today.
 	Timezone string
 
 	// SchemaPath is an optional path to a schema.sql to apply. When empty,
@@ -50,7 +48,7 @@ func Scaffold(opts ScaffoldOptions) (string, error) {
 		return "", fmt.Errorf("profile %q already exists at %s", opts.Name, dir)
 	}
 
-	for _, sub := range []string{"", "jobs", "skills", "notes", "auth", "state"} {
+	for _, sub := range []string{"", "context", "jobs", "skills", "migrations", "notes", "auth", "state"} {
 		if err := os.MkdirAll(filepath.Join(dir, sub), 0o700); err != nil {
 			return "", fmt.Errorf("create %s: %w", sub, err)
 		}
@@ -94,20 +92,6 @@ func scaffoldDB(path string, opts ScaffoldOptions) error {
 		if _, err := db.Exec(string(raw)); err != nil {
 			return fmt.Errorf("apply schema: %w", err)
 		}
-	} else {
-		if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS settings (
-			key TEXT PRIMARY KEY, value TEXT);`); err != nil {
-			return fmt.Errorf("create settings: %w", err)
-		}
-	}
-
-	// The timezone must exist: NewSQLite refuses to start without it rather
-	// than defaulting to UTC.
-	if _, err := db.Exec(
-		`INSERT OR REPLACE INTO settings(key, value) VALUES ('timezone', ?)`,
-		opts.Timezone,
-	); err != nil {
-		return fmt.Errorf("seed timezone: %w", err)
 	}
 	return nil
 }
@@ -117,6 +101,10 @@ func scaffoldConfig(opts ScaffoldOptions) string {
 # Credentials belong in environment variables, never in this file.
 toolsets = ["db", "file"]
 timezone = "%s"
+system_files = ["SOUL.md"]
+
+[database]
+max_affected_rows = 100
 
 [agent]
 max_turns = 20

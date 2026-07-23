@@ -94,28 +94,25 @@ func TestScaffoldRejectsPathNames(t *testing.T) {
 	}
 }
 
-// The database must carry its timezone: NewSQLite refuses to start without one
-// rather than defaulting to UTC.
-func TestScaffoldSeedsTimezone(t *testing.T) {
+func TestScaffoldStoresTimezoneInConfig(t *testing.T) {
 	root := t.TempDir()
 	dir, err := Scaffold(ScaffoldOptions{Root: root, Name: "default", Timezone: "Asia/Tokyo"})
 	if err != nil {
 		t.Fatalf("Scaffold: %v", err)
 	}
 
-	db, err := sql.Open("sqlite", filepath.Join(dir, "db.sqlite"))
+	p, err := Load(root, "default")
 	if err != nil {
-		t.Fatalf("open: %v", err)
+		t.Fatalf("load: %v", err)
 	}
-	defer db.Close()
-
-	var tz string
-	if err := db.QueryRow(`SELECT value FROM settings WHERE key='timezone'`).Scan(&tz); err != nil {
-		t.Fatalf("read timezone: %v", err)
+	zone, source, err := p.Timezone()
+	if err != nil {
+		t.Fatalf("timezone: %v", err)
 	}
-	if tz != "Asia/Tokyo" {
-		t.Fatalf("timezone = %q", tz)
+	if zone != "Asia/Tokyo" || source != "config" {
+		t.Fatalf("timezone = %q (%s)", zone, source)
 	}
+	_ = dir
 }
 
 // WAL lets the agent and inspection tools read concurrently.
@@ -173,20 +170,23 @@ CREATE TABLE records (id INTEGER PRIMARY KEY, value TEXT);`
 		t.Fatalf("expected two custom tables, got %d", tables)
 	}
 
-	// The scaffold's timezone must win over whatever the schema seeds, since
-	// the operator just stated it explicitly.
+	// Domain data remains untouched; runtime timezone belongs to the profile.
 	var tz string
 	if err := db.QueryRow(`SELECT value FROM settings WHERE key='timezone'`).Scan(&tz); err != nil {
 		t.Fatalf("read timezone: %v", err)
 	}
-	if tz != "America/New_York" {
-		t.Fatalf("timezone = %q; the requested zone should win", tz)
+	if tz != "Asia/Tokyo" {
+		t.Fatalf("domain schema timezone was unexpectedly rewritten to %q", tz)
 	}
 
 	// And it must still be a loadable profile.
 	p, err := Load(root, "default")
 	if err != nil {
 		t.Fatalf("Load: %v", err)
+	}
+	loc, err := p.Location()
+	if err != nil || loc.String() != "America/New_York" {
+		t.Fatalf("runtime timezone = %v, err=%v", loc, err)
 	}
 	rt, err := Build(p, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {

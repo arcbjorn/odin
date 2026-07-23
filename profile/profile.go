@@ -3,12 +3,15 @@
 // A profile is a directory:
 //
 //	<root>/profiles/<name>/
-//	  config.toml     model chain, toolset allowlist, limits
-//	  SOUL.md         system prompt
-//	  skills/         markdown skill documents
-//	  notes/          the model's scoped file area
-//	  db.sqlite      profile database
-//	  auth/           OAuth tokens, 0600
+//	  config.toml      model chain, toolset allowlist, limits
+//	  SOUL.md          primary system prompt
+//	  context/         optional ordered system-prompt fragments
+//	  skills/          markdown skill documents
+//	  migrations/      profile-owned database migrations
+//	  notes/           the model's scoped file area
+//	  db.sqlite        profile domain database
+//	  state/           runtime state, including timezone override
+//	  auth/            OAuth tokens, 0600
 //
 // Everything is profile-scoped. There are no globals and no default profile;
 // a name that does not resolve to a directory is a hard error.
@@ -20,6 +23,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 // Profile is a loaded, validated agent configuration.
@@ -29,18 +33,27 @@ type Profile struct {
 
 	// Soul is the system prompt, read from SOUL.md.
 	Soul string
+	// System is the ordered, stable composition of every configured system
+	// file. Soul remains available for callers that only need the primary file.
+	System string
 
 	Config Config
 
 	// Resolved paths. Every one is inside Dir.
-	SkillsDir string
-	NotesDir  string
-	DBPath    string
-	AuthDir   string
+	SkillsDir     string
+	NotesDir      string
+	DBPath        string
+	AuthDir       string
+	StateDir      string
+	MigrationsDir string
 }
 
 // Config is the parsed config.toml.
 type Config struct {
+	// SystemFiles are composed in order into the stable prompt. Empty defaults
+	// to SOUL.md for backward compatibility.
+	SystemFiles []string
+
 	// Toolsets is the allowlist. A tool absent here is never registered, so
 	// the model cannot call it. This is a profile boundary, not a prompt rule.
 	Toolsets []string
@@ -48,9 +61,8 @@ type Config struct {
 	// Providers is the fallback chain, in order. providers[0] is primary.
 	Providers []ProviderConfig
 
-	// Timezone is informational only. The database's settings table is the
-	// source of truth; Odin loads it at startup. This exists so `odin status`
-	// can flag a mismatch before an operator restarts after changing zones.
+	// Timezone is the committed default. A machine-local runtime override may
+	// temporarily replace it while travelling.
 	Timezone string
 
 	MaxTurns  int
@@ -59,6 +71,15 @@ type Config struct {
 
 	Telegram TelegramConfig
 	Web      WebConfig
+	Database DatabaseConfig
+}
+
+// DatabaseConfig defines generic write boundaries. Domain behavior belongs in
+// profile skills and schema constraints, not in the runtime tool.
+type DatabaseConfig struct {
+	// MaxAffectedRows rolls a write back when it would change more rows than
+	// this. Zero disables the limit.
+	MaxAffectedRows int64
 }
 
 // WebConfig configures the web toolset. All fields are optional: the defaults
@@ -164,23 +185,14 @@ func Load(root, name string) (*Profile, error) {
 	}
 
 	p := &Profile{
-		Name:      name,
-		Dir:       dir,
-		SkillsDir: filepath.Join(dir, "skills"),
-		NotesDir:  filepath.Join(dir, "notes"),
-		DBPath:    filepath.Join(dir, "db.sqlite"),
-		AuthDir:   filepath.Join(dir, "auth"),
-	}
-
-	soul, err := os.ReadFile(filepath.Join(dir, "SOUL.md"))
-	if err != nil {
-		// The persona is the agent. Running without it would produce a
-		// generic assistant wearing the agent's name and writing to its DB.
-		return nil, fmt.Errorf("read SOUL.md for profile %q: %w", name, err)
-	}
-	p.Soul = strings.TrimSpace(string(soul))
-	if p.Soul == "" {
-		return nil, fmt.Errorf("SOUL.md for profile %q is empty", name)
+		Name:          name,
+		Dir:           dir,
+		SkillsDir:     filepath.Join(dir, "skills"),
+		NotesDir:      filepath.Join(dir, "notes"),
+		DBPath:        filepath.Join(dir, "db.sqlite"),
+		AuthDir:       filepath.Join(dir, "auth"),
+		StateDir:      filepath.Join(dir, "state"),
+		MigrationsDir: filepath.Join(dir, "migrations"),
 	}
 
 	raw, err := os.ReadFile(filepath.Join(dir, "config.toml"))
@@ -192,6 +204,33 @@ func Load(root, name string) (*Profile, error) {
 		return nil, fmt.Errorf("parse config.toml for profile %q: %w", name, err)
 	}
 	p.Config = cfg
+	if len(p.Config.SystemFiles) == 0 {
+		p.Config.SystemFiles = []string{"SOUL.md"}
+	}
+
+	var systemParts []string
+	for i, name := range p.Config.SystemFiles {
+		path, err := profileFile(p.Dir, name)
+		if err != nil {
+			return nil, fmt.Errorf("system_files[%d]: %w", i, err)
+		}
+		body, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("read system file %q for profile %q: %w", name, p.Name, err)
+		}
+		bodyText := strings.TrimSpace(string(body))
+		if bodyText == "" {
+			return nil, fmt.Errorf("system file %q for profile %q is empty", name, p.Name)
+		}
+		if name == "SOUL.md" {
+			p.Soul = bodyText
+		}
+		systemParts = append(systemParts, bodyText)
+	}
+	if p.Soul == "" {
+		return nil, fmt.Errorf("system_files must include SOUL.md")
+	}
+	p.System = strings.Join(systemParts, "\n\n")
 
 	if err := p.validate(); err != nil {
 		return nil, fmt.Errorf("profile %q: %w", name, err)
@@ -200,6 +239,22 @@ func Load(root, name string) (*Profile, error) {
 }
 
 func (p *Profile) validate() error {
+	if p.Config.Timezone == "" {
+		return fmt.Errorf("timezone is required")
+	}
+	if _, err := time.LoadLocation(p.Config.Timezone); err != nil {
+		return fmt.Errorf("unknown timezone %q: %w", p.Config.Timezone, err)
+	}
+	if p.Config.Database.MaxAffectedRows < 0 {
+		return fmt.Errorf("database max_affected_rows must not be negative")
+	}
+	systemSeen := make(map[string]bool, len(p.Config.SystemFiles))
+	for _, name := range p.Config.SystemFiles {
+		if systemSeen[name] {
+			return fmt.Errorf("duplicate system file %q", name)
+		}
+		systemSeen[name] = true
+	}
 	if len(p.Config.Providers) == 0 {
 		return fmt.Errorf("no providers configured")
 	}
@@ -212,6 +267,9 @@ func (p *Profile) validate() error {
 		}
 		if pr.Name == "" {
 			return fmt.Errorf("provider %d: name is required", i)
+		}
+		if pr.APIKeyEnv != "" && !validEnvironmentName(pr.APIKeyEnv) {
+			return fmt.Errorf("provider %q: invalid api_key_env %q", pr.Name, pr.APIKeyEnv)
 		}
 		if strings.ContainsAny(pr.Name, `/\`) || strings.Contains(pr.Name, "..") {
 			return fmt.Errorf("provider %d: invalid name %q", i, pr.Name)
@@ -277,10 +335,15 @@ func (p *Profile) validate() error {
 	if len(p.Config.Toolsets) == 0 {
 		return fmt.Errorf("no toolsets enabled; an agent with no tools cannot read its own database")
 	}
+	toolsetSeen := make(map[string]bool, len(p.Config.Toolsets))
 	for _, ts := range p.Config.Toolsets {
 		if !knownToolsets[ts] {
 			return fmt.Errorf("unknown toolset %q (known: %s)", ts, knownToolsetNames())
 		}
+		if toolsetSeen[ts] {
+			return fmt.Errorf("duplicate toolset %q", ts)
+		}
+		toolsetSeen[ts] = true
 	}
 
 	// The db toolset needs a database. Discovering this at 07:00, inside
@@ -298,6 +361,9 @@ func (p *Profile) validate() error {
 	}
 
 	if p.Config.Telegram.TokenEnv != "" {
+		if !validEnvironmentName(p.Config.Telegram.TokenEnv) {
+			return fmt.Errorf("telegram token_env %q is not a valid environment variable name", p.Config.Telegram.TokenEnv)
+		}
 		if len(p.Config.Telegram.AllowedUsers) == 0 {
 			// Guest access is never enabled implicitly.
 			return fmt.Errorf("telegram is configured but allowed_users is empty; refusing to run an open gateway")
@@ -306,6 +372,9 @@ func (p *Profile) validate() error {
 			// Direct messages use the user's own ID as the chat ID.
 			p.Config.Telegram.ChatID = p.Config.Telegram.AllowedUsers[0]
 		}
+	}
+	if p.Config.Web.ReaderKeyEnv != "" && !validEnvironmentName(p.Config.Web.ReaderKeyEnv) {
+		return fmt.Errorf("web reader_key_env %q is not a valid environment variable name", p.Config.Web.ReaderKeyEnv)
 	}
 
 	switch p.Config.Effort {
@@ -355,12 +424,42 @@ func (p *Profile) HasToolset(name string) bool {
 // EnsureDirs creates the writable directories a profile needs. Auth is 0700
 // because it holds refresh tokens.
 func (p *Profile) EnsureDirs() error {
-	for _, dir := range []string{p.NotesDir, p.AuthDir} {
+	for _, dir := range []string{p.NotesDir, p.AuthDir, p.StateDir} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return fmt.Errorf("create %s: %w", dir, err)
 		}
 	}
 	return nil
+}
+
+func profileFile(root, name string) (string, error) {
+	if strings.TrimSpace(name) == "" || filepath.IsAbs(name) || strings.Contains(name, `\`) {
+		return "", fmt.Errorf("invalid relative path %q", name)
+	}
+	clean := filepath.Clean(name)
+	if clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("invalid relative path %q", name)
+	}
+	resolvedRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", fmt.Errorf("resolve profile directory: %w", err)
+	}
+	path, err := filepath.EvalSymlinks(filepath.Join(root, clean))
+	if err != nil {
+		return "", err
+	}
+	rel, err := filepath.Rel(resolvedRoot, path)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("system file %q resolves outside the profile", name)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", err
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("system file %q is not a regular file", name)
+	}
+	return path, nil
 }
 
 // AuthPath is the credential file for a provider.
@@ -385,6 +484,16 @@ func validPathName(name string) bool {
 		return false
 	}
 	return true
+}
+
+func validEnvironmentName(name string) bool {
+	for i, r := range name {
+		if r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' || r == '_' || i > 0 && r >= '0' && r <= '9' {
+			continue
+		}
+		return false
+	}
+	return name != ""
 }
 
 // List returns the profile names available under root, for error messages and

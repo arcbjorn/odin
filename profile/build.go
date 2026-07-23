@@ -1,6 +1,7 @@
 package profile
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"log/slog"
@@ -8,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/arcbjorn/odin/agent"
 	"github.com/arcbjorn/odin/model"
@@ -22,9 +24,10 @@ type Runtime struct {
 	Loop     *agent.Loop
 
 	// DB is nil when the db toolset is not enabled.
-	DB     *sql.DB
-	Store  *tools.SQLite
-	Skills *tools.Skills
+	DB       *sql.DB
+	Store    *tools.SQLite
+	Skills   *tools.Skills
+	Location *time.Location
 }
 
 // Close releases resources held by the runtime.
@@ -46,20 +49,32 @@ func Build(p *Profile, log *slog.Logger) (*Runtime, error) {
 	if err := p.EnsureDirs(); err != nil {
 		return nil, err
 	}
+	location, err := p.Location()
+	if err != nil {
+		return nil, err
+	}
 
 	provider, err := buildProvider(p, log)
 	if err != nil {
 		return nil, err
 	}
 
-	rt := &Runtime{Profile: p, Provider: provider, Tools: agent.NewRegistry()}
+	rt := &Runtime{Profile: p, Provider: provider, Tools: agent.NewRegistry(), Location: location}
 
 	if p.HasToolset("db") {
 		db, err := tools.OpenDB(p.DBPath)
 		if err != nil {
 			return nil, err
 		}
-		store, err := tools.NewSQLite(db)
+		if applied, err := ApplyMigrations(context.Background(), db, p.MigrationsDir); err != nil {
+			db.Close()
+			return nil, err
+		} else if applied > 0 {
+			log.Info("database migrations applied", "count", applied)
+		}
+		store, err := tools.NewSQLite(db, tools.SQLiteConfig{
+			Location: location, MaxAffectedRows: p.Config.Database.MaxAffectedRows,
+		})
 		if err != nil {
 			db.Close()
 			return nil, err
@@ -73,13 +88,6 @@ func Build(p *Profile, log *slog.Logger) (*Runtime, error) {
 			}
 		}
 
-		// The database's timezone is authoritative and loaded at startup;
-		// config.toml's is informational. A mismatch means one of the two is
-		// stale, which is worth surfacing before it misfiles a session.
-		if p.Config.Timezone != "" && p.Config.Timezone != store.Location().String() {
-			log.Warn("timezone mismatch between config and database; the database wins",
-				"config", p.Config.Timezone, "db", store.Location().String())
-		}
 	}
 
 	if p.HasToolset("file") {
@@ -180,7 +188,8 @@ func buildWeb(p *Profile, log *slog.Logger) (*tools.Web, error) {
 	return tools.NewWeb(cfg), nil
 }
 
-// System builds the stable system prompt: SOUL.md, then the skill catalog.
+// System builds the stable system prompt from configured files and the skill
+// catalog.
 //
 // Assembled once at startup and never rebuilt per turn. It must stay
 // byte-identical across requests or the provider's prompt cache misses and
@@ -188,7 +197,7 @@ func buildWeb(p *Profile, log *slog.Logger) (*tools.Web, error) {
 // no timestamps, no per-request IDs — belongs here.
 func (r *Runtime) System() string {
 	var b strings.Builder
-	b.WriteString(r.Profile.Soul)
+	b.WriteString(r.Profile.System)
 
 	if r.Skills != nil {
 		if catalog, err := r.Skills.Catalog(); err == nil && catalog != "" {

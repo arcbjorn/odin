@@ -17,6 +17,7 @@ import (
 
 const minimalConfig = `
 toolsets = ["db", "skills"]
+timezone = "America/New_York"
 
 [agent]
 max_turns = 20
@@ -39,6 +40,9 @@ func writeProfile(t *testing.T, name, config, soul string, withDB, withSkills bo
 		t.Fatalf("mkdir: %v", err)
 	}
 	if config != "" {
+		if !strings.Contains(config, "timezone =") {
+			config = "timezone = \"UTC\"\n" + config
+		}
 		if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte(config), 0o600); err != nil {
 			t.Fatalf("write config: %v", err)
 		}
@@ -66,8 +70,7 @@ func writeProfile(t *testing.T, name, config, soul string, withDB, withSkills bo
 			t.Fatalf("open database: %v", err)
 		}
 		defer db.Close()
-		if _, err := db.Exec(`CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT);
-			INSERT INTO settings(key,value) VALUES ('timezone','America/New_York');`); err != nil {
+		if _, err := db.Exec(`CREATE TABLE records (id INTEGER PRIMARY KEY, value TEXT);`); err != nil {
 			t.Fatalf("seed database: %v", err)
 		}
 	}
@@ -122,6 +125,61 @@ func TestLoadValidProfile(t *testing.T) {
 	}
 	if !p.HasToolset("db") || p.HasToolset("shell") {
 		t.Fatalf("toolsets = %v", p.Config.Toolsets)
+	}
+}
+
+func TestSystemFilesComposeInDeclaredOrder(t *testing.T) {
+	cfg := strings.Replace(minimalConfig, `timezone = "America/New_York"`,
+		`timezone = "America/New_York"
+system_files = ["SOUL.md", "context/USER.md", "context/POLICIES.md"]`, 1)
+	root := writeProfile(t, "default", cfg, "# Identity\n\nBe direct.", true, true)
+	dir := filepath.Join(root, "profiles", "default", "context")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "USER.md"), []byte("# User\n\nLikes trains."), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "POLICIES.md"), []byte("# Policies\n\nUse evidence."), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	p, err := Load(root, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := strings.Index(p.System, "# Identity")
+	user := strings.Index(p.System, "# User")
+	policies := strings.Index(p.System, "# Policies")
+	if identity < 0 || user <= identity || policies <= user {
+		t.Fatalf("system files were not composed in order:\n%s", p.System)
+	}
+}
+
+func TestSystemFilesCannotEscapeProfile(t *testing.T) {
+	cfg := strings.Replace(minimalConfig, `timezone = "America/New_York"`,
+		`timezone = "America/New_York"
+system_files = ["SOUL.md", "../secret.md"]`, 1)
+	root := writeProfile(t, "default", cfg, "# Identity", true, true)
+	if _, err := Load(root, "default"); err == nil {
+		t.Fatal("expected traversal in system_files to fail")
+	}
+}
+
+func TestSystemFilesRejectSymlinkEscape(t *testing.T) {
+	cfg := strings.Replace(minimalConfig, `timezone = "America/New_York"`,
+		`timezone = "America/New_York"
+system_files = ["SOUL.md", "context/USER.md"]`, 1)
+	root := writeProfile(t, "default", cfg, "# Identity", true, true)
+	dir := filepath.Join(root, "profiles", "default")
+	outside := filepath.Join(root, "USER.md")
+	if err := os.WriteFile(outside, []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(root, filepath.Join(dir, "context")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(root, "default"); err == nil || !strings.Contains(err.Error(), "outside") {
+		t.Fatalf("expected symlink escape to fail, got %v", err)
 	}
 }
 
@@ -703,6 +761,7 @@ func TestProfilesAreIsolated(t *testing.T) {
 	}
 	maintCfg := `
 toolsets = ["file"]
+timezone = "UTC"
 
 [[providers]]
 kind = "openai"
@@ -752,6 +811,7 @@ func TestMaintFileAccessIsReadOnly(t *testing.T) {
 	}
 	cfg := `
 toolsets = ["file"]
+timezone = "UTC"
 
 [[providers]]
 kind = "openai"

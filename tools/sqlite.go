@@ -20,44 +20,36 @@ const maxRows = 200
 // SQLite exposes a profile database to the model as two tools: `query` for
 // reads and `exec` for writes.
 //
-// Split deliberately. The model reaches for reads constantly and writes rarely,
-// and the write path carries rules that reads don't (never touch another day's
-// row, always read back). Two small tools with 2 fields each are also far
-// easier for a weaker model to fill than one tool with a mode flag.
+// Split deliberately. The model reaches for reads constantly and writes rarely.
+// Two small tools with two fields each are also easier for a weaker model to
+// fill than one tool with a mode flag.
 type SQLite struct {
-	db *sql.DB
-	// tz is the user's local zone, read from the database's settings table.
-	// The server runs UTC; date('now') in SQL is UTC and lands on the wrong
-	// day for anything logged late at night. Every date this package computes
-	// goes through tz instead.
-	tz *time.Location
+	db              *sql.DB
+	tz              *time.Location
+	maxAffectedRows int64
 }
 
-// NewSQLite opens the database and loads its timezone.
-//
-// The timezone lives in the DB rather than config because it defines what
-// "today" means for every query. Odin loads it when the profile starts.
-func NewSQLite(db *sql.DB) (*SQLite, error) {
-	s := &SQLite{db: db, tz: time.UTC}
-
-	var name string
-	err := db.QueryRow(`SELECT value FROM settings WHERE key = 'timezone'`).Scan(&name)
-	switch {
-	case err == sql.ErrNoRows:
-		return nil, fmt.Errorf("database has no timezone in settings; refusing to guess")
-	case err != nil:
-		return nil, fmt.Errorf("read timezone: %w", err)
-	}
-
-	loc, err := time.LoadLocation(name)
-	if err != nil {
-		return nil, fmt.Errorf("unknown timezone %q in settings: %w", name, err)
-	}
-	s.tz = loc
-	return s, nil
+// SQLiteConfig configures the profile database tools.
+type SQLiteConfig struct {
+	Location        *time.Location
+	MaxAffectedRows int64
 }
 
-// Now returns the current time in the database's local zone.
+// NewSQLite exposes a domain database using profile runtime settings.
+func NewSQLite(db *sql.DB, cfg SQLiteConfig) (*SQLite, error) {
+	if db == nil {
+		return nil, fmt.Errorf("database is required")
+	}
+	if cfg.Location == nil {
+		return nil, fmt.Errorf("database location is required")
+	}
+	if cfg.MaxAffectedRows < 0 {
+		return nil, fmt.Errorf("max affected rows must not be negative")
+	}
+	return &SQLite{db: db, tz: cfg.Location, maxAffectedRows: cfg.MaxAffectedRows}, nil
+}
+
+// Now returns the current time in the profile's runtime zone.
 func (s *SQLite) Now() time.Time { return time.Now().In(s.tz) }
 
 // Today returns the local date as YYYY-MM-DD. Never derive this from the
@@ -84,8 +76,7 @@ func (s *SQLite) QueryTool() agent.Tool {
 		Def: model.Tool{
 			Name: "query",
 			Description: "Run a read-only SQL SELECT against the profile database. " +
-				"Today's local date is available as :today. " +
-				"Never use date('now') or datetime('now') — the server is UTC and they land on the wrong day.",
+				"Common table expressions are supported. Today's profile-local date is available as :today.",
 			Schema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -105,9 +96,7 @@ func (s *SQLite) ExecTool() agent.Tool {
 		Def: model.Tool{
 			Name: "exec",
 			Description: "Run a single INSERT or UPDATE against the profile database. " +
-				"Today's local date is available as :today. Store times as LOCAL times. " +
-				"A session's day is the date it STARTED, even if it crossed midnight. " +
-				"Never modify a row on a different date — that is a different session.",
+				"Today's profile-local date is available as :today. Destructive and schema-changing statements are not allowed.",
 			Schema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -136,11 +125,25 @@ func (s *SQLite) handleQuery(ctx context.Context, raw json.RawMessage) (string, 
 	if !isReadOnly(stmt) {
 		return "", fmt.Errorf("query is read-only; use the exec tool to write")
 	}
-	if err := checkNoUTCNow(stmt); err != nil {
-		return "", err
-	}
 
-	rows, err := s.db.QueryContext(ctx, stmt, sql.Named("today", s.Today()))
+	// A leading WITH is not proof of a read: SQLite accepts WITH ... INSERT.
+	// Enforce read-only behavior in SQLite on the exact connection executing
+	// this call instead of relying only on the lexical check above.
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return "", fmt.Errorf("open read connection: %w", err)
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, `PRAGMA query_only = ON`); err != nil {
+		return "", fmt.Errorf("enable read-only query: %w", err)
+	}
+	defer func() {
+		resetCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_, _ = conn.ExecContext(resetCtx, `PRAGMA query_only = OFF`)
+	}()
+
+	rows, err := conn.QueryContext(ctx, stmt, sql.Named("today", s.Today()))
 	if err != nil {
 		return "", fmt.Errorf("sql error: %w", err)
 	}
@@ -164,34 +167,32 @@ func (s *SQLite) handleExec(ctx context.Context, raw json.RawMessage) (string, e
 	if err := checkWriteVerb(stmt); err != nil {
 		return "", err
 	}
-	if err := checkNoUTCNow(stmt); err != nil {
-		return "", err
-	}
 
-	res, err := s.db.ExecContext(ctx, stmt, sql.Named("today", s.Today()))
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", fmt.Errorf("begin write: %w", err)
+	}
+	defer tx.Rollback()
+
+	res, err := tx.ExecContext(ctx, stmt, sql.Named("today", s.Today()))
 	if err != nil {
 		return "", fmt.Errorf("sql error: %w", err)
 	}
 
 	affected, _ := res.RowsAffected()
-	if affected == 0 {
-		// Silence here is a bug, not a success. An UPDATE matching nothing
-		// usually means the WHERE targeted the wrong day.
-		return "", fmt.Errorf("statement affected 0 rows — check the WHERE clause targets the right date")
+	if s.maxAffectedRows > 0 && affected > s.maxAffectedRows {
+		return "", fmt.Errorf("statement would affect %d rows, over this profile's limit of %d; rolled back",
+			affected, s.maxAffectedRows)
 	}
-	if affected > 5 {
-		// One session, one row. A wide UPDATE means a missing WHERE.
-		return "", fmt.Errorf("statement affected %d rows, which looks like a missing WHERE clause; "+
-			"no rollback was performed — verify the data", affected)
+	if err := tx.Commit(); err != nil {
+		return "", fmt.Errorf("commit write: %w", err)
 	}
 
 	out := fmt.Sprintf("OK: %d row(s) affected.", affected)
 	if id, err := res.LastInsertId(); err == nil && id > 0 {
 		out += fmt.Sprintf(" Inserted id %d.", id)
 	}
-	// The skill requires reading the row back and stating what was saved, so a
-	// wrong date is visible immediately instead of rotting in the log.
-	out += " Now SELECT the row back and state the day and times you actually saved."
+	out += " Verify the stored row when correctness matters."
 	return out, nil
 }
 
@@ -287,22 +288,6 @@ func checkWriteVerb(stmt string) error {
 	default:
 		return fmt.Errorf("exec accepts INSERT or UPDATE only")
 	}
-}
-
-// checkNoUTCNow blocks SQL that derives dates from the server clock.
-//
-// This is the single highest-value guard in the file. The server runs UTC and
-// the user trains late at night, so date('now') silently files a 23:51 session
-// under tomorrow. The model is told this in the tool description; this check
-// makes it enforceable rather than advisory.
-func checkNoUTCNow(stmt string) error {
-	lower := strings.ToLower(stmt)
-	for _, bad := range []string{"date('now')", "datetime('now')", "date(\"now\")", "datetime(\"now\")", "current_date", "current_timestamp"} {
-		if strings.Contains(lower, bad) {
-			return fmt.Errorf("%s is UTC and lands on the wrong local day; use :today or an explicit local time", bad)
-		}
-	}
-	return nil
 }
 
 func firstWord(s string) string {

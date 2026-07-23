@@ -11,10 +11,8 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// newDB builds an in-memory database with the parts of the real schema
-// these tests exercise. America/New_York is UTC-3 (IANA inverts the sign) — the same
-// zone the real database ships with, and the reason a late-night session can
-// land on the wrong UTC day.
+// newDB builds an in-memory domain database and supplies its runtime timezone
+// independently, as production profile assembly does.
 func newDB(t *testing.T, tz string) *SQLite {
 	t.Helper()
 
@@ -25,8 +23,7 @@ func newDB(t *testing.T, tz string) *SQLite {
 	t.Cleanup(func() { db.Close() })
 
 	schema := `
-CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT);
-CREATE TABLE projects (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE);
+	CREATE TABLE projects (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE);
 CREATE TABLE work_sessions (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id   INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -52,11 +49,12 @@ INSERT INTO projects(name) VALUES ('odin');
 	if _, err := db.Exec(schema); err != nil {
 		t.Fatalf("schema: %v", err)
 	}
-	if _, err := db.Exec(`INSERT INTO settings(key,value) VALUES ('timezone', ?)`, tz); err != nil {
-		t.Fatalf("seed timezone: %v", err)
-	}
 
-	s, err := NewSQLite(db)
+	loc, err := time.LoadLocation(tz)
+	if err != nil {
+		t.Fatalf("timezone: %v", err)
+	}
+	s, err := NewSQLite(db, SQLiteConfig{Location: loc, MaxAffectedRows: 5})
 	if err != nil {
 		t.Fatalf("NewSQLite: %v", err)
 	}
@@ -72,23 +70,18 @@ func callTool(t *testing.T, h func(context.Context, json.RawMessage) (string, er
 	return h(context.Background(), raw)
 }
 
-func TestRefusesDBWithoutTimezone(t *testing.T) {
+func TestRequiresRuntimeLocation(t *testing.T) {
 	db, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
 	defer db.Close()
-	if _, err := db.Exec(`CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT)`); err != nil {
-		t.Fatalf("schema: %v", err)
-	}
-
-	// Guessing a zone would silently file sessions on the wrong day.
-	if _, err := NewSQLite(db); err == nil {
-		t.Fatal("expected refusal when the database has no timezone")
+	if _, err := NewSQLite(db, SQLiteConfig{}); err == nil {
+		t.Fatal("expected refusal without a runtime location")
 	}
 }
 
-func TestTodayUsesDBTimezoneNotUTC(t *testing.T) {
+func TestTodayUsesRuntimeTimezoneNotUTC(t *testing.T) {
 	s := newDB(t, "America/New_York") // UTC-3
 
 	wantLocal := time.Now().In(s.Location()).Format("2006-01-02")
@@ -105,28 +98,12 @@ func TestTodayUsesDBTimezoneNotUTC(t *testing.T) {
 	}
 }
 
-// The highest-value guard: date('now') is UTC and files a 23:51 session under
-// tomorrow.
-func TestBlocksUTCNowFunctions(t *testing.T) {
+// Date semantics belong to the profile schema and skills. The generic database
+// tool supplies :today but does not reject legitimate UTC expressions.
+func TestAllowsProfileChosenDateExpressions(t *testing.T) {
 	s := newDB(t, "America/New_York")
-
-	blocked := []string{
-		`SELECT * FROM work_sessions WHERE day = date('now')`,
-		`SELECT * FROM work_sessions WHERE started_at > datetime('now')`,
-		`SELECT * FROM daily_reviews WHERE date = CURRENT_DATE`,
-		`SELECT * FROM work_sessions WHERE started_at > CURRENT_TIMESTAMP`,
-		`SELECT * FROM work_sessions WHERE day = DATE("now")`,
-	}
-	for _, stmt := range blocked {
-		if _, err := callTool(t, s.handleQuery, stmt); err == nil {
-			t.Errorf("expected refusal for %q", stmt)
-		}
-	}
-
-	// Writes must be guarded too — that is where a wrong date persists.
-	insert := `INSERT INTO events(timestamp, type, note) VALUES (datetime('now'), 'idea', 'x')`
-	if _, err := callTool(t, s.handleExec, insert); err == nil {
-		t.Error("expected refusal for datetime('now') in a write")
+	if _, err := callTool(t, s.handleQuery, `SELECT date('now')`); err != nil {
+		t.Fatalf("generic query rejected UTC expression: %v", err)
 	}
 }
 
@@ -164,6 +141,22 @@ func TestQueryRejectsWrites(t *testing.T) {
 	}
 }
 
+func TestQueryRejectsMutatingCTE(t *testing.T) {
+	s := newDB(t, "UTC")
+	stmt := `WITH item(timestamp,type,note) AS (VALUES ('2026-07-20 10:00','idea','x'))
+		INSERT INTO events(timestamp,type,note) SELECT timestamp, type, note FROM item`
+	if _, err := callTool(t, s.handleQuery, stmt); err == nil {
+		t.Fatal("query tool accepted a mutating CTE")
+	}
+	out, err := callTool(t, s.handleQuery, `SELECT count(*) AS count FROM events`)
+	if err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if !strings.Contains(out, "\n0\n") {
+		t.Fatalf("mutating CTE changed the database:\n%s", out)
+	}
+}
+
 func TestExecRejectsDestructiveVerbs(t *testing.T) {
 	s := newDB(t, "UTC")
 	for _, stmt := range []string{
@@ -185,22 +178,19 @@ func TestRejectsStackedStatements(t *testing.T) {
 	}
 }
 
-// An UPDATE matching nothing usually means the WHERE targeted the wrong day.
-// Reporting success there is how a wrong date rots silently in the log.
-func TestZeroRowsAffectedIsAnError(t *testing.T) {
+func TestZeroRowsAffectedIsReportedWithoutFailure(t *testing.T) {
 	s := newDB(t, "UTC")
 	stmt := `UPDATE daily_reviews SET day_score = 9 WHERE date = '1999-01-01'`
-	_, err := callTool(t, s.handleExec, stmt)
-	if err == nil {
-		t.Fatal("expected an error when no rows matched")
+	out, err := callTool(t, s.handleExec, stmt)
+	if err != nil {
+		t.Fatalf("zero-row update: %v", err)
 	}
-	if !strings.Contains(err.Error(), "0 rows") {
-		t.Fatalf("error should name the cause, got: %v", err)
+	if !strings.Contains(out, "0 row") {
+		t.Fatalf("result should state that no rows matched, got: %s", out)
 	}
 }
 
-// He trains once per day per activity, so a wide UPDATE means a missing WHERE.
-func TestWideUpdateIsRejected(t *testing.T) {
+func TestWideUpdateIsRolledBack(t *testing.T) {
 	s := newDB(t, "UTC")
 	for _, d := range []string{"2026-07-10", "2026-07-11", "2026-07-12", "2026-07-13", "2026-07-14", "2026-07-15"} {
 		if _, err := callTool(t, s.handleExec,
@@ -213,8 +203,16 @@ func TestWideUpdateIsRejected(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected a WHERE-less UPDATE across 6 rows to be rejected")
 	}
-	if !strings.Contains(err.Error(), "WHERE") {
-		t.Fatalf("error should name the missing WHERE, got: %v", err)
+	if !strings.Contains(err.Error(), "rolled back") {
+		t.Fatalf("error should confirm rollback, got: %v", err)
+	}
+
+	out, err := callTool(t, s.handleQuery, `SELECT count(*) FROM daily_reviews WHERE day_score = 10`)
+	if err != nil {
+		t.Fatalf("verify rollback: %v", err)
+	}
+	if !strings.Contains(out, "\n0\n") {
+		t.Fatalf("wide update was not rolled back:\n%s", out)
 	}
 }
 
