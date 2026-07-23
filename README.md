@@ -15,9 +15,9 @@ ever-growing surface, and a scheduler that can't pollute the model's context.
 - **Provider fallback chain.** Try providers in order; every call restarts from
   the primary, so a recovered primary is used again instead of sticking on a
   fallback.
-- **Profiles.** Each agent is a directory (persona, tools, jobs, SQLite state).
+- **Profiles.** Each agent is a directory (persona, tools, jobs, domain data).
   A tool absent from the allowlist is never constructed — it cannot be called.
-- **In-process scheduler.** Cron jobs fire on the database's own timezone,
+- **In-process scheduler.** Cron jobs fire on the profile's runtime timezone,
   independent of host time. Restart Odin after changing it to move every job.
   No `cron` in the DB, no per-job model snapshots to drift out of sync.
 - **Guardrails.** A repeated failing tool call is stopped after 3 attempts, not
@@ -50,8 +50,9 @@ odin verify --root . --profile default                  # live provider self-tes
 odin ask    --root . --profile default "summarize this: <paste>"
 ```
 
-`init` creates `profiles/<name>/` with a `config.toml`, `SOUL.md` (the system
-prompt), and a SQLite db. Edit `SOUL.md` and `config.toml`, then run.
+`init` creates `profiles/<name>/` with a `config.toml`, `SOUL.md`, context,
+skills, jobs, migrations, and a SQLite domain database. Edit the committed
+profile files, run `odin validate`, then start it.
 
 ## Commands
 
@@ -63,9 +64,13 @@ prompt), and a SQLite db. Edit `SOUL.md` and `config.toml`, then run.
 | `ask`    | One turn from the CLI                                    |
 | `status` | Print profile, tools, providers, and job schedule       |
 | `verify` | Live self-test: call the provider, tools, continuation  |
+| `validate` | Offline validation of profile, jobs, skills, and migrations |
+| `timezone` | Read or change the machine-local runtime timezone override |
 | `auth`   | Device-code OAuth login for a subscription provider     |
 | `usage`  | Remaining plan quota per provider                       |
 | `models` | List models a provider exposes                          |
+| `backup` | Create a consistent SQLite profile backup               |
+| `restore` | Restore the profile database while the agent is stopped |
 
 ## Configuration
 
@@ -75,6 +80,10 @@ by the environment variable that holds them.
 ```toml
 toolsets = ["db", "file"]   # allowlist; absent tools cannot be called
 timezone = "UTC"
+system_files = ["SOUL.md"]   # stable prompt fragments, composed in order
+
+[database]
+max_affected_rows = 100       # zero disables the transactional write limit
 
 [agent]
 max_turns = 20
@@ -95,14 +104,40 @@ api_key_env = "OPENAI_API_KEY"
 ```
 
 **Toolsets:** `db` (SQLite read/write), `file` (scoped notes),
-`skills` (markdown procedures), `web` (fetch + optional search). `web` search
-plugs into a self-hosted SearXNG when `search_url` is set.
+`skills` (markdown procedures), `web` (fetch + optional search), and `shell`
+(operator-confined command inspection). `web` search plugs into a self-hosted
+SearXNG when `search_url` is set.
 
 **Subscription auth:** providers can authenticate with a plan instead of a
 metered key via device-code OAuth — `xai`, `codex`, `claude`, `minimax`. Set
 `subscription = "..."` on the provider block and run `odin auth`. Tokens are
 stored `0600` and refreshed automatically; the bot token and refresh tokens
 never touch a log.
+
+### Profile structure
+
+```text
+profiles/<name>/
+├── config.toml
+├── SOUL.md
+├── context/       optional static system-prompt fragments
+├── skills/        on-demand procedures
+├── jobs/          schedules and isolated job prompts
+├── migrations/    immutable <version>-<name>.sql files
+├── notes/         model-scoped files
+├── state/         runtime timezone and scheduler state
+├── auth/          OAuth credentials
+└── db.sqlite      profile-owned domain data
+```
+
+`SOUL.md`, context, skills, jobs, and migrations are configuration and belong
+in version control. Notes, state, credentials, backups, and the live database
+are machine-local. Odin applies pending migrations transactionally at startup
+and refuses to run if an applied migration's checksum changes.
+
+`timezone` in `config.toml` is the committed default. Travel changes use
+`odin timezone --profile NAME set Area/City`; `reset` returns to the committed
+default. Restart the running agent after a change so its schedule is rebuilt.
 
 ## Deploy
 
