@@ -55,6 +55,7 @@ type Scheduler struct {
 
 	mu      sync.Mutex
 	nextRun map[string]time.Time
+	running map[string]bool
 }
 
 // Config configures a Scheduler.
@@ -125,6 +126,7 @@ func New(cfg Config) (*Scheduler, error) {
 		now:     cfg.now,
 		jitter:  jitter,
 		nextRun: make(map[string]time.Time),
+		running: make(map[string]bool),
 	}
 
 	store, err := newStateStore(cfg.StatePath)
@@ -211,11 +213,31 @@ func (s *Scheduler) tick(ctx context.Context) {
 			continue
 		}
 
+		s.mu.Lock()
+		if s.running[job.Name] {
+			s.mu.Unlock()
+			s.log.Warn("skipping overlapping run", "job", job.Name,
+				"due", due.Format(time.RFC3339))
+			s.state.record(job.Name, runRecord{
+				At: now, Timezone: s.loc.String(), Skipped: true,
+				Error: "skipped: previous run still active",
+			})
+			continue
+		}
+		s.running[job.Name] = true
+		s.mu.Unlock()
+
 		go s.execute(ctx, job, due)
 	}
 }
 
 func (s *Scheduler) execute(ctx context.Context, job Job, due time.Time) {
+	defer func() {
+		s.mu.Lock()
+		delete(s.running, job.Name)
+		s.mu.Unlock()
+	}()
+
 	if s.jitter > 0 {
 		select {
 		case <-time.After(jitterFor(job.Name, s.jitter)):

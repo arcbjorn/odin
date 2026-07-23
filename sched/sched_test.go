@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -157,9 +158,9 @@ func TestInvalidExpressions(t *testing.T) {
 	}
 }
 
-// The scheduler uses the database timezone supplied at startup rather than the
+// The scheduler uses the profile timezone supplied at startup rather than the
 // host clock. Restarting with a travel timezone must move job times with it.
-func TestJobTimesFollowDBTimezone(t *testing.T) {
+func TestJobTimesFollowProfileTimezone(t *testing.T) {
 	home, err := time.LoadLocation("America/New_York") // UTC-3
 	if err != nil {
 		t.Fatalf("home zone: %v", err)
@@ -347,6 +348,46 @@ func TestSchedulerDoesNotDoubleFire(t *testing.T) {
 	if count != 1 {
 		t.Fatalf("job fired %d times, want 1", count)
 	}
+}
+
+func TestSchedulerSkipsOverlappingRun(t *testing.T) {
+	loc := time.UTC
+	clock := &fakeClock{t: time.Date(2026, 7, 20, 7, 0, 10, 0, loc)}
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+
+	s, err := New(Config{
+		Location: loc, Logger: quiet(), Jitter: time.Nanosecond, now: clock.now,
+		Jobs: []Job{{
+			Name: "Radar", Schedule: mustParse(t, "* * * * *"),
+			Prompt: "scan", Enabled: true,
+		}},
+		Runner: func(context.Context, Job) error {
+			once.Do(func() { close(started) })
+			<-release
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	s.nextRun["Radar"] = time.Date(2026, 7, 20, 7, 0, 0, 0, loc)
+	s.tick(context.Background())
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("first run did not start")
+	}
+
+	clock.set(time.Date(2026, 7, 20, 7, 1, 10, 0, loc))
+	s.tick(context.Background())
+	health := s.Health()
+	if len(health) != 1 || !health[0].LastSkipped ||
+		!strings.Contains(health[0].LastError, "still active") {
+		t.Fatalf("overlap not recorded as skipped: %+v", health)
+	}
+	close(release)
 }
 
 // Firing a 07:00 daily report at 15:00 is worse than skipping it: the content
