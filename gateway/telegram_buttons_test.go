@@ -116,6 +116,37 @@ func TestVerdictReplyRejectsForeignPayloads(t *testing.T) {
 	}
 }
 
+// The gateway sends rich Markdown, so a model writes "**1.**" as readily as
+// "1.". Every emphasis style must still produce a keyboard — otherwise the
+// feature fails silently on exactly the messages it exists for, and the text
+// still looks correct so nobody notices.
+func TestVerdictButtonsToleratesMarkdownEmphasis(t *testing.T) {
+	for name, text := range map[string]string{
+		"bold dot":   "**1.** Ando, MAAT\n**2.** Fabrica coffee",
+		"bold paren": "**1)** Ando, MAAT\n**2)** Fabrica coffee",
+		"italic":     "*1* Ando, MAAT\n*2* Fabrica coffee",
+		"underscore": "_1_ Ando, MAAT\n_2_ Fabrica coffee",
+		"bold body":  "1. **Ando** — closes Aug 20\n2. **Fabrica** — new roaster",
+	} {
+		if verdictButtons(text) == nil {
+			t.Errorf("expected a keyboard for %s numbering", name)
+		}
+	}
+}
+
+// Prose that merely contains numbers must never sprout a keyboard.
+func TestVerdictButtonsIgnoresIncidentalNumbers(t *testing.T) {
+	for name, text := range map[string]string{
+		"years":  "2026 was busy.\n2027 looks busier.",
+		"prices": "12 euros for the ticket.\n30 euros for dinner.",
+		"times":  "09:00 swim\n18:00 cardio",
+	} {
+		if verdictButtons(text) != nil {
+			t.Errorf("unexpected keyboard for %s", name)
+		}
+	}
+}
+
 // makeCallback builds a button-tap update.
 func makeCallback(updateID, userID, chatID int64, data string) update {
 	var u update

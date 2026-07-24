@@ -32,7 +32,12 @@ const callbackPrefix = "v:"
 // numberedItem matches a line that opens with "1." / "2)" / "3 -" — the shapes
 // a model actually produces for a numbered list. Anchored to the line start so
 // a date or price mid-sentence is never mistaken for an item number.
-var numberedItem = regexp.MustCompile(`(?m)^\s*(\d{1,2})\s*[.)\-]\s+\S`)
+//
+// Leading and trailing `*` and `_` are tolerated because the gateway sends rich
+// Markdown, and a model formatting a brief writes "**1.**" as readily as "1.".
+// Without this the keyboard silently fails to appear on exactly the messages it
+// exists for — the bug is invisible, because the text still looks correct.
+var numberedItem = regexp.MustCompile(`(?m)^\s*[*_]{0,2}\s*(\d{1,2})\s*[.)\-]?\s*[*_]{0,2}\s+\S`)
 
 // verdictButtons builds a keyboard for a numbered brief, or nil when the text
 // is not one. Nil means "send exactly as before".
