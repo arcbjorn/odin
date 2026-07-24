@@ -21,9 +21,21 @@ func (t *Telegram) send(ctx context.Context, chatID int64, text string) (undeliv
 	if text == "" {
 		return "", nil
 	}
+
+	// Derived from the whole reply, not the final chunk: a split could put the
+	// numbered list in one message and its closing question in the next, and
+	// the keyboard has to reflect every item he can see.
+	buttons := verdictButtons(text)
+
 	chunks := splitMessage(text, maxMessageRunes)
 	for i, chunk := range chunks {
-		if err := t.sendChunk(ctx, chatID, chunk); err != nil {
+		// Attach only to the last chunk, so the keyboard sits at the bottom of
+		// the conversation rather than stranded mid-brief.
+		var markup []byte
+		if i == len(chunks)-1 {
+			markup = buttons
+		}
+		if err := t.sendChunk(ctx, chatID, chunk, markup); err != nil {
 			t.log.Error("send failed", "chat_id", chatID, "error", err)
 			return strings.Join(chunks[i:], "\n\n"), err
 		}
@@ -44,13 +56,18 @@ func (t *Telegram) reply(ctx context.Context, chatID int64, text string) {
 // MarkdownV2 cannot express. richMarkdown only fixes soft breaks and table
 // alignment; nothing is escaped. If the endpoint is unavailable (an older
 // server), it latches off and every send after uses plain text.
-func (t *Telegram) sendChunk(ctx context.Context, chatID int64, chunk string) error {
+// markup is an optional inline_keyboard payload; nil sends no keyboard.
+func (t *Telegram) sendChunk(ctx context.Context, chatID int64, chunk string, markup []byte) error {
 	if !t.richDisabled.Load() {
 		payload, _ := json.Marshal(map[string]string{"markdown": richMarkdown(chunk)})
-		res, err := t.call(ctx, "sendRichMessage", url.Values{
+		params := url.Values{
 			"chat_id":      {fmt.Sprint(chatID)},
 			"rich_message": {string(payload)},
-		})
+		}
+		if len(markup) > 0 {
+			params.Set("reply_markup", string(markup))
+		}
+		res, err := t.call(ctx, "sendRichMessage", params)
 		if err == nil {
 			t.trackSent(chatID, res)
 			return nil
@@ -61,10 +78,14 @@ func (t *Telegram) sendChunk(ctx context.Context, chatID int64, chunk string) er
 		t.log.Warn("sendRichMessage failed, sending plain text", "chat_id", chatID, "error", err)
 	}
 
-	res, err := t.call(ctx, "sendMessage", url.Values{
+	params := url.Values{
 		"chat_id": {fmt.Sprint(chatID)},
 		"text":    {chunk},
-	})
+	}
+	if len(markup) > 0 {
+		params.Set("reply_markup", string(markup))
+	}
+	res, err := t.call(ctx, "sendMessage", params)
 	if err == nil {
 		t.trackSent(chatID, res)
 	}

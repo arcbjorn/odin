@@ -234,6 +234,23 @@ type update struct {
 		Text string `json:"text"`
 		Date int64  `json:"date"`
 	} `json:"message"`
+
+	// CallbackQuery is a tap on an inline button. Same allowlist and same
+	// conversation path as a typed message — see handleCallback.
+	CallbackQuery *struct {
+		ID   string `json:"id"`
+		From *struct {
+			ID       int64  `json:"id"`
+			Username string `json:"username"`
+		} `json:"from"`
+		Message *struct {
+			MessageID int64 `json:"message_id"`
+			Chat      *struct {
+				ID int64 `json:"id"`
+			} `json:"chat"`
+		} `json:"message"`
+		Data string `json:"data"`
+	} `json:"callback_query"`
 }
 
 type apiResponse struct {
@@ -319,8 +336,8 @@ func (t *Telegram) poll(ctx context.Context) ([]update, error) {
 	params := url.Values{
 		"timeout": {"60"},
 		"offset":  {fmt.Sprint(offset)},
-		// Only messages matter; ignore edits, callbacks, channel posts.
-		"allowed_updates": {`["message"]`},
+		// Messages and button taps; still ignoring edits and channel posts.
+		"allowed_updates": {`["message","callback_query"]`},
 	}
 
 	raw, err := t.call(ctx, "getUpdates", params)
@@ -345,6 +362,11 @@ func (t *Telegram) poll(ctx context.Context) ([]update, error) {
 }
 
 func (t *Telegram) handle(ctx context.Context, u update) {
+	if u.CallbackQuery != nil {
+		t.handleCallback(ctx, u)
+		return
+	}
+
 	msg := u.Message
 	if msg == nil || msg.From == nil || msg.Chat == nil {
 		return
@@ -366,6 +388,49 @@ func (t *Telegram) handle(ctx context.Context, u update) {
 	t.track(msg.Chat.ID, msg.MessageID)
 
 	go t.respond(ctx, msg.Chat.ID, msg.Text)
+}
+
+// handleCallback turns a button tap into an ordinary turn.
+//
+// The tap is rewritten into the text he would have typed and pushed through
+// the same path, so the agent has no idea a button was involved and the
+// scout's numbered-reply procedure needs no special case.
+func (t *Telegram) handleCallback(ctx context.Context, u update) {
+	cb := u.CallbackQuery
+	if cb.From == nil || cb.Message == nil || cb.Message.Chat == nil {
+		return
+	}
+
+	// Same allowlist as a typed message, enforced before anything else. A
+	// button in a forwarded message must not become an open door.
+	if !t.allowed[cb.From.ID] {
+		t.log.Warn("ignoring callback from unauthorized user",
+			"user_id", cb.From.ID, "username", cb.From.Username)
+		return
+	}
+
+	text, ok := verdictReply(cb.Data)
+	if !ok {
+		// Unknown payload: still answer, or the client spins forever.
+		t.answerCallback(ctx, cb.ID)
+		return
+	}
+
+	// Answer first. Telegram shows a loading spinner on the button until this
+	// lands, and the agent turn below can take tens of seconds.
+	t.answerCallback(ctx, cb.ID)
+
+	go t.respond(ctx, cb.Message.Chat.ID, text)
+}
+
+// answerCallback clears the button's loading state. Best-effort: a failure
+// here costs a spinner, not a turn.
+func (t *Telegram) answerCallback(ctx context.Context, id string) {
+	if _, err := t.call(ctx, "answerCallbackQuery", url.Values{
+		"callback_query_id": {id},
+	}); err != nil {
+		t.log.Debug("answerCallbackQuery failed", "error", err)
+	}
 }
 
 func (t *Telegram) respond(ctx context.Context, chatID int64, text string) {
