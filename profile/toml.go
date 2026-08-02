@@ -199,6 +199,12 @@ func assign(cfg *Config, section, key, value string, lineNo int) error {
 				return fmt.Errorf("line %d: api_key_env: %w", lineNo, err)
 			}
 			p.APIKeyEnv = s
+		case "api_key_cmd":
+			str, err := parseString(value)
+			if err != nil {
+				return fmt.Errorf("line %d: api_key_cmd: %w", lineNo, err)
+			}
+			p.APIKeyCmd = str
 		case "api_mode":
 			s, err := parseString(value)
 			if err != nil {

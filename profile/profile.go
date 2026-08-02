@@ -109,6 +109,13 @@ type ProviderConfig struct {
 	// EnvironmentFile from a 0600 file owned by the agent user.
 	APIKeyEnv string
 
+	// APIKeyCmd is a shell command whose stdout is the key, for a credential
+	// that already lives in a secret store — sops, a password manager, a
+	// vault CLI. It runs once at startup as the agent's own user, which is
+	// the same trust boundary as APIKeyEnv rather than a new one. Mutually
+	// exclusive with APIKeyEnv.
+	APIKeyCmd string
+
 	// APIMode selects the provider wire protocol. Empty means infer it from
 	// Kind, provider name, and model. The explicit forms are chat_completions,
 	// responses, and anthropic_messages.
@@ -277,6 +284,15 @@ func (p *Profile) validate() error {
 		if pr.APIKeyEnv != "" && !validEnvironmentName(pr.APIKeyEnv) {
 			return fmt.Errorf("provider %q: invalid api_key_env %q", pr.Name, pr.APIKeyEnv)
 		}
+		if pr.APIKeyEnv != "" && pr.APIKeyCmd != "" {
+			return fmt.Errorf("provider %q: api_key_env and api_key_cmd are mutually exclusive", pr.Name)
+		}
+		// The point of api_key_cmd is to fetch a secret, not to hold one. An
+		// echoed literal would put the key straight into git, which the
+		// rejected api_key/token/secret keys already exist to prevent.
+		if strings.HasPrefix(strings.TrimSpace(pr.APIKeyCmd), "echo ") {
+			return fmt.Errorf("provider %q: api_key_cmd must fetch the key, not echo it; use api_key_env for a literal", pr.Name)
+		}
 		if strings.ContainsAny(pr.Name, `/\`) || strings.Contains(pr.Name, "..") {
 			return fmt.Errorf("provider %d: invalid name %q", i, pr.Name)
 		}
@@ -334,10 +350,10 @@ func (p *Profile) validate() error {
 			if pr.TokenURL == "" || pr.ClientID == "" {
 				return fmt.Errorf("provider %q: oauth requires client_id and token_url", pr.Name)
 			}
-		} else if (pr.Subscription == "qwen" || pr.Subscription == "kimi") && pr.APIKeyEnv == "" {
-			return fmt.Errorf("provider %q: %s plan requires api_key_env", pr.Name, pr.Subscription)
-		} else if pr.Subscription == "" && pr.APIKeyEnv == "" {
-			return fmt.Errorf("provider %q: api_key_env is required when oauth and subscription are unset", pr.Name)
+		} else if (pr.Subscription == "qwen" || pr.Subscription == "kimi") && pr.APIKeyEnv == "" && pr.APIKeyCmd == "" {
+			return fmt.Errorf("provider %q: %s plan requires api_key_env or api_key_cmd", pr.Name, pr.Subscription)
+		} else if pr.Subscription == "" && pr.APIKeyEnv == "" && pr.APIKeyCmd == "" {
+			return fmt.Errorf("provider %q: api_key_env or api_key_cmd is required when oauth and subscription are unset", pr.Name)
 		}
 		if err := validateSubscriptionTransport(pr); err != nil {
 			return err

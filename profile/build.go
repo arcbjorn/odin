@@ -1,6 +1,7 @@
 package profile
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"fmt"
@@ -468,15 +469,15 @@ func tokenSource(p *Profile, pc ProviderConfig) (model.TokenSource, error) {
 
 func singleTokenSource(pc ProviderConfig, authPath string) (model.TokenSource, error) {
 	if pc.Subscription == "qwen" || pc.Subscription == "kimi" {
-		key := strings.TrimSpace(os.Getenv(pc.APIKeyEnv))
-		if key == "" {
-			return nil, fmt.Errorf("provider %q: %s is not set in the environment", pc.Name, pc.APIKeyEnv)
+		key, err := providerKey(pc)
+		if err != nil {
+			return nil, err
 		}
 		if pc.Subscription == "qwen" && !strings.HasPrefix(key, "sk-sp-") {
-			return nil, fmt.Errorf("provider %q: %s is not a Qwen Coding Plan key (expected sk-sp- prefix)", pc.Name, pc.APIKeyEnv)
+			return nil, fmt.Errorf("provider %q: %s is not a Qwen Coding Plan key (expected sk-sp- prefix)", pc.Name, keySourceName(pc))
 		}
 		if pc.Subscription == "kimi" && !strings.HasPrefix(key, "sk-kimi-") {
-			return nil, fmt.Errorf("provider %q: %s is not a Kimi Code plan key (expected sk-kimi- prefix)", pc.Name, pc.APIKeyEnv)
+			return nil, fmt.Errorf("provider %q: %s is not a Kimi Code plan key (expected sk-kimi- prefix)", pc.Name, keySourceName(pc))
 		}
 		return model.StaticToken(key), nil
 	}
@@ -492,12 +493,77 @@ func singleTokenSource(pc ProviderConfig, authPath string) (model.TokenSource, e
 		}), nil
 	}
 
-	key := os.Getenv(pc.APIKeyEnv)
-	if key == "" {
-		// Fail at startup, not at 07:00 inside a cron run with nobody watching.
-		return nil, fmt.Errorf("provider %q: %s is not set in the environment", pc.Name, pc.APIKeyEnv)
+	key, err := providerKey(pc)
+	if err != nil {
+		return nil, err
 	}
 	return model.StaticToken(key), nil
+}
+
+// keyCommandTimeout bounds a credential command. A secret store that hangs
+// must fail the start rather than wedge it before the gateway ever opens.
+const keyCommandTimeout = 30 * time.Second
+
+// providerKey resolves a plan or API key from whichever source config names.
+//
+// Both paths resolve once, at startup, so a missing credential fails where
+// someone is watching rather than at 07:00 inside a cron run with nobody
+// looking. Rotating a key means restarting the agent either way.
+func providerKey(pc ProviderConfig) (string, error) {
+	if pc.APIKeyCmd != "" {
+		return runKeyCommand(pc)
+	}
+	key := strings.TrimSpace(os.Getenv(pc.APIKeyEnv))
+	if key == "" {
+		return "", fmt.Errorf("provider %q: %s is not set in the environment", pc.Name, pc.APIKeyEnv)
+	}
+	return key, nil
+}
+
+// runKeyCommand takes a command's stdout as the credential.
+//
+// This exists so a key can come from the store that already holds it — sops,
+// a password manager, a vault CLI — instead of widening the systemd unit's
+// EnvironmentFile. It runs as the agent's own user, which is the same trust
+// boundary as the environment variable it replaces, not a new one.
+//
+// stdout is the secret and is never logged. stderr is reported on failure,
+// because a command that failed produced no key, and without its diagnostics
+// a misconfigured secret store is invisible.
+func runKeyCommand(pc ProviderConfig) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), keyCommandTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "sh", "-c", pc.APIKeyCmd)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		detail := strings.TrimSpace(stderr.String())
+		if len(detail) > 300 {
+			detail = detail[:300] + "\u2026"
+		}
+		if detail != "" {
+			return "", fmt.Errorf("provider %q: api_key_cmd failed: %w: %s", pc.Name, err, detail)
+		}
+		return "", fmt.Errorf("provider %q: api_key_cmd failed: %w", pc.Name, err)
+	}
+
+	key := strings.TrimSpace(stdout.String())
+	if key == "" {
+		return "", fmt.Errorf("provider %q: api_key_cmd produced no key on stdout", pc.Name)
+	}
+	return key, nil
+}
+
+// keySourceName names the configured credential source for an error message,
+// without ever revealing what it produced.
+func keySourceName(pc ProviderConfig) string {
+	if pc.APIKeyCmd != "" {
+		return "api_key_cmd output"
+	}
+	return pc.APIKeyEnv
 }
 
 func providerAPIMode(pc ProviderConfig) string {
