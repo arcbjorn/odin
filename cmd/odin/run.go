@@ -204,7 +204,9 @@ func cmdAsk(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	res, err := rt.Loop.Run(ctx, []model.Message{{Role: model.RoleUser, Content: question}})
+	// Chat, not Loop: `ask` is an interactive turn, so it honours an active
+	// /model override — and is the quickest way to check one from the CLI.
+	res, err := rt.Chat.Run(ctx, []model.Message{{Role: model.RoleUser, Content: question}})
 	if res != nil && res.Text != "" {
 		fmt.Println(res.Text)
 	}
@@ -238,9 +240,12 @@ func buildGateway(rt *profile.Runtime, log *slog.Logger) (*gateway.Telegram, err
 	return gateway.NewTelegram(gateway.TelegramConfig{
 		Token:        token,
 		AllowedUsers: cfg.AllowedUsers,
-		Agent:        loopAgent{rt.Loop},
-		Logger:       log,
-		ModelChain:   chain,
+		// Chat, not Loop: interactive turns go through the router so /model
+		// can redirect them. Scheduled jobs keep using rt.Loop.
+		Agent:      loopAgent{rt.Chat},
+		Logger:     log,
+		ModelChain: chain,
+		Switcher:   rt.Switcher,
 	})
 }
 

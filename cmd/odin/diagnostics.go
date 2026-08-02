@@ -214,6 +214,11 @@ func cmdStatus(args []string) error {
 	fmt.Printf("toolsets  %s\n", strings.Join(p.Config.Toolsets, ", "))
 	fmt.Printf("tools     %s\n", strings.Join(rt.Tools.Names(), ", "))
 	fmt.Printf("provider  %s\n", rt.Provider.Name())
+	// An active override changes what chat answers with but not what jobs
+	// run, so it has to be visible here rather than inferred from a log line.
+	if target, overridden := rt.Switcher.Current(); overridden {
+		fmt.Printf("chat      %s (runtime override; jobs use the configured chain)\n", target)
+	}
 	for _, provider := range p.Config.Providers {
 		if len(provider.Accounts) > 0 {
 			fmt.Printf("accounts  %s: %s\n", provider.Name, strings.Join(provider.Accounts, ", "))

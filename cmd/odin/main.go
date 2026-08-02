@@ -44,6 +44,8 @@ func run() error {
 		return cmdUsage(args)
 	case "models":
 		return cmdModels(args)
+	case "model":
+		return cmdModel(args)
 	case "verify":
 		return cmdVerify(args)
 	case "validate":
@@ -74,6 +76,7 @@ func usage() {
   odin auth    --profile NAME --provider NAME [--account NAME]
   odin usage   --profile NAME [--provider NAME]
   odin models  --profile NAME [--provider NAME]
+  odin model   --profile NAME [get|set TARGET|reset]
   odin verify  --profile NAME --provider NAME
   odin validate --profile NAME
   odin timezone --profile NAME [get|set ZONE|reset]
