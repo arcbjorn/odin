@@ -75,8 +75,8 @@ profile files, run `odin validate`, then start it.
 
 ## Configuration
 
-`profiles/<name>/config.toml`. Secrets are never in this file — they are named
-by the environment variable that holds them.
+`profiles/<name>/config.toml`. Secrets are never in this file — it names the
+environment variable or the command that yields them.
 
 ```toml
 toolsets = ["db", "file"]   # allowlist; absent tools cannot be called
@@ -97,7 +97,8 @@ kind = "openai"                  # openai | anthropic
 name = "openai"
 model = "gpt-5.6-terra"
 base_url = "https://api.openai.com/v1"
-api_key_env = "OPENAI_API_KEY"
+api_key_env = "OPENAI_API_KEY"  # or api_key_cmd, never the key itself
+# effort = "medium"              # overrides [agent].effort for this provider
 
 # [telegram]
 # token_env = "TELEGRAM_TOKEN"
@@ -108,6 +109,29 @@ api_key_env = "OPENAI_API_KEY"
 `skills` (markdown procedures), `web` (fetch + optional search), and `shell`
 (operator-confined command inspection). `web` search plugs into a self-hosted
 SearXNG when `search_url` is set.
+
+**Credentials:** a provider names either `api_key_env` (an environment
+variable, injected by systemd from a `0600` `EnvironmentFile`) or
+`api_key_cmd` (a command whose stdout is the key). The second exists so the key
+can come from the store that already holds it without widening the unit file:
+
+```toml
+api_key_cmd = "sops -d --extract '[\"openai\"]' ~/secrets.enc.yaml"
+```
+
+It runs once at startup as the agent's own user — the same trust boundary as
+the environment variable, not a new one — and its stdout is never logged. A
+command that fails stops the start and reports its stderr, because a broken
+secret store must be visible at boot rather than at 07:00. The key itself never
+belongs in `config.toml`: `api_key`, `token`, `secret`, and an `echo`-ed
+`api_key_cmd` are all rejected at load.
+
+**Reasoning effort:** `[agent].effort` is the profile default; `effort` on a
+provider overrides it, because one level rarely fits a chain of different model
+families. If a model answers the hint with HTTP 400, the transport drops it and
+retries once, then stops sending it — without that, a `/model` switch onto a
+non-reasoning model would fail every turn, since the chain treats 400 as a
+malformed request of our own making and aborts rather than falling back.
 
 **Subscription auth:** providers can authenticate with a plan instead of a
 metered key via device-code OAuth — `xai`, `codex`, `claude`, `minimax`. Set
@@ -126,14 +150,26 @@ without an edit, a restart, or losing the thread:
 /model gpt-5.5               a bare model — its provider is detected
 /model backup                a provider — at its configured model
 /model backup/glm-4.9        both, explicitly
+/model once backup/glm-4.9   this process only; nothing is stored
+/model verify                live protocol check on what is running
+/model verify backup/glm-4.9 check it, and switch only if it passes
 /model reset                 back to config.toml
 ```
+
+`verify` runs the same catalog, tool-call, and continuation checks as
+`odin verify`, against the target alone rather than the chain — a fallback
+answering for it would report a working model that does not work. Pairing it
+with a switch is the point: a model that cannot hold up the tool exchange is
+found here rather than halfway through a real turn. The two modifiers compose,
+so `/model once verify NAME` checks a model, uses it, and stores nothing.
 
 The same thing from the CLI, for a profile that has no gateway:
 
 ```sh
 odin model --profile default                        # show
 odin model --profile default set backup/glm-4.9     # switch
+odin model --profile default once backup/glm-4.9    # this process only
+odin model --profile default verify backup/glm-4.9  # check, then switch
 odin model --profile default reset                  # restore
 ```
 
@@ -148,6 +184,11 @@ accidents:
 - **The fallback chain survives.** The selected provider is promoted to
   primary; the others stay behind it at their own models. Switching a model
   does not cost the resilience the chain is for.
+- **A `once` switch stores nothing.** `/model` persists by default, because it
+  is aimed at a daemon rather than a shell session and an override that
+  silently reverts on restart is its own kind of drift. `once` is the opt-out
+  for a genuinely exploratory switch — which is the case Hermes makes its
+  default, for the same reason.
 - **It only selects what is already configured.** `/model` cannot add a
   provider, run an OAuth flow, or take an API key. Those stay in `config.toml`
   and `odin auth`, reviewable in git rather than typed into a chat window.
@@ -170,7 +211,7 @@ profiles/<name>/
 ├── jobs/          schedules and isolated job prompts
 ├── migrations/    immutable <version>-<name>.sql files
 ├── notes/         model-scoped files
-├── state/         runtime overrides (timezone, model) and scheduler state
+├── state/         runtime overrides, scheduler state, undelivered messages
 ├── auth/          OAuth credentials
 └── db.sqlite      profile-owned domain data
 ```
@@ -183,6 +224,27 @@ and refuses to run if an applied migration's checksum changes.
 `timezone` in `config.toml` is the committed default. Travel changes use
 `odin timezone --profile NAME set Area/City`; `reset` returns to the committed
 default. Restart the running agent after a change so its schedule is rebuilt.
+
+### Job delivery
+
+Nobody is waiting on a 07:00 brief to notice it never arrived. So a scheduled
+job whose Telegram delivery fails does two things: it records the run as
+**failed**, and it keeps the text.
+
+Failing loudly is the important half. Delivery used to be fire-and-forget, so
+an outage meant the tokens were spent, the output was gone, `odin status` said
+`last run ok`, and the watchdog — the one component whose job is catching
+silent job failure — had nothing to alert on.
+
+Keeping the text is the cheap half. Undelivered output goes to
+`state/outbox.json` and is retried on the gateway's next poll, so a blip costs
+a late message rather than the model's work. Only the chunks that never landed
+are re-sent, entries survive a restart, and anything delivered more than a few
+minutes late is labelled with how late it is — a brief that arrives hours after
+its window must not read as if it were written just now. The queue is bounded
+by size, attempts, and age; past a day, delivering is the wrong outcome and the
+entry is dropped with an error in the log. Interactive replies are never
+queued: you are there, and you will just ask again.
 
 ## Deploy
 
