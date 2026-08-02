@@ -69,6 +69,7 @@ profile files, run `odin validate`, then start it.
 | `auth`   | Device-code OAuth login for a subscription provider     |
 | `usage`  | Remaining plan quota per provider                       |
 | `models` | List models a provider exposes                          |
+| `model`  | Show or switch the model used for chat turns             |
 | `backup` | Create a consistent SQLite profile backup               |
 | `restore` | Restore the profile database while the agent is stopped |
 
@@ -114,6 +115,50 @@ metered key via device-code OAuth — `xai`, `codex`, `claude`, `minimax`. Set
 stored `0600` and refreshed automatically; the bot token and refresh tokens
 never touch a log.
 
+### Switching models
+
+`config.toml` sets the chain. `/model` changes what the *conversation* runs on,
+without an edit, a restart, or losing the thread:
+
+```text
+/model                       what runs now, its fallbacks, and how to change it
+/model list                  live catalogs, per provider
+/model gpt-5.5               a bare model — its provider is detected
+/model backup                a provider — at its configured model
+/model backup/glm-4.9        both, explicitly
+/model reset                 back to config.toml
+```
+
+The same thing from the CLI, for a profile that has no gateway:
+
+```sh
+odin model --profile default                        # show
+odin model --profile default set backup/glm-4.9     # switch
+odin model --profile default reset                  # restore
+```
+
+Three properties are worth knowing, because they are choices rather than
+accidents:
+
+- **Scheduled jobs never move.** A switch applies to chat turns only; jobs keep
+  running the chain in `config.toml`. An exploratory switch at 23:00 becoming
+  the model that runs the 07:00 job is the drift a config-driven scheduler
+  exists to prevent, and `odin status` prints an active override so it is
+  never a surprise.
+- **The fallback chain survives.** The selected provider is promoted to
+  primary; the others stay behind it at their own models. Switching a model
+  does not cost the resilience the chain is for.
+- **It only selects what is already configured.** `/model` cannot add a
+  provider, run an OAuth flow, or take an API key. Those stay in `config.toml`
+  and `odin auth`, reviewable in git rather than typed into a chat window.
+  (Hermes splits this the same way — its in-session `/model` switches, its
+  `hermes model` wizard configures. Odin has no wizard: the config is a file.)
+
+The choice is written to `state/runtime.json` and re-applied at startup — no
+catalog call, so a provider that is merely unreachable at boot does not
+silently discard it. An override naming a provider that has since left
+`config.toml` is dropped with a warning rather than failing the start.
+
 ### Profile structure
 
 ```text
@@ -125,7 +170,7 @@ profiles/<name>/
 ├── jobs/          schedules and isolated job prompts
 ├── migrations/    immutable <version>-<name>.sql files
 ├── notes/         model-scoped files
-├── state/         runtime timezone and scheduler state
+├── state/         runtime overrides (timezone, model) and scheduler state
 ├── auth/          OAuth credentials
 └── db.sqlite      profile-owned domain data
 ```
