@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"time"
 )
@@ -28,6 +29,7 @@ type Anthropic struct {
 	oauthIdentity bool
 	userAgent     string
 	dropThinking  bool
+	effort        effortState
 }
 
 // AnthropicConfig configures the Anthropic provider.
@@ -43,10 +45,13 @@ type AnthropicConfig struct {
 	// Pro/Max subscription traffic.
 	OAuthIdentity bool
 	UserAgent     string
+	// Effort overrides the profile-wide reasoning level for this provider.
+	Effort string
 	// DropThinking omits Anthropic's adaptive-thinking fields for compatible
 	// endpoints whose non-Claude models reject that request shape.
 	DropThinking bool
 	Timeout      time.Duration
+	Logger       *slog.Logger
 }
 
 // NewAnthropic builds an Anthropic provider. Model defaults to Opus 4.8.
@@ -73,6 +78,7 @@ func NewAnthropic(cfg AnthropicConfig) *Anthropic {
 		oauthIdentity: cfg.OAuthIdentity,
 		userAgent:     cfg.UserAgent,
 		dropThinking:  cfg.DropThinking,
+		effort:        newEffortState(cfg.Provider, cfg.Effort, cfg.DropThinking, cfg.Logger),
 		http:          &http.Client{Timeout: timeout},
 	}
 }
@@ -136,6 +142,14 @@ type antResponse struct {
 
 // Complete runs one inference call.
 func (a *Anthropic) Complete(ctx context.Context, req Request) (*Response, error) {
+	resp, err := a.complete(ctx, req)
+	if err != nil && a.effort.retryWithout(req.Effort, err) {
+		return a.complete(ctx, req)
+	}
+	return resp, err
+}
+
+func (a *Anthropic) complete(ctx context.Context, req Request) (*Response, error) {
 	maxTokens := req.MaxTokens
 	if maxTokens == 0 {
 		maxTokens = 16000
@@ -166,8 +180,8 @@ func (a *Anthropic) Complete(ctx context.Context, req Request) (*Response, error
 	// Effort rides in output_config, not at the top level.
 	if !a.dropThinking {
 		body.Thinking = map[string]any{"type": "adaptive"}
-		if req.Effort != "" {
-			body.OutputConfig = map[string]any{"effort": req.Effort}
+		if effort := a.effort.resolve(req.Effort); effort != "" {
+			body.OutputConfig = map[string]any{"effort": effort}
 		}
 	}
 

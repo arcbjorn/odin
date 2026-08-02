@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -23,10 +24,11 @@ type OpenAI struct {
 	http     *http.Client
 	headers  map[string]string
 
-	// dropEffort suppresses reasoning_effort for models that reject it.
-	// xAI returns HTTP 400 on grok-4, grok-4-fast, grok-3, and grok-code-fast
-	// even though those models do reason. grok-4.5 accepts low|medium|high.
-	dropEffort bool
+	// effort resolves the reasoning hint and latches it off if the model
+	// rejects it. xAI returns HTTP 400 on grok-4, grok-4-fast, grok-3, and
+	// grok-code-fast even though those models do reason; grok-4.5 accepts
+	// low|medium|high.
+	effort effortState
 }
 
 // OpenAIConfig configures an OpenAI-compatible provider.
@@ -36,8 +38,11 @@ type OpenAIConfig struct {
 	BaseURL    string
 	Tokens     TokenSource
 	DropEffort bool
-	Headers    map[string]string
-	Timeout    time.Duration
+	// Effort overrides the profile-wide reasoning level for this provider.
+	Effort  string
+	Headers map[string]string
+	Timeout time.Duration
+	Logger  *slog.Logger
 }
 
 // NewOpenAI builds an OpenAI-compatible provider.
@@ -54,13 +59,13 @@ func NewOpenAI(cfg OpenAIConfig) *OpenAI {
 		headers[name] = value
 	}
 	return &OpenAI{
-		provider:   cfg.Provider,
-		model:      cfg.Model,
-		baseURL:    strings.TrimRight(cfg.BaseURL, "/"),
-		tokens:     cfg.Tokens,
-		dropEffort: cfg.DropEffort,
-		headers:    headers,
-		http:       &http.Client{Timeout: timeout},
+		provider: cfg.Provider,
+		model:    cfg.Model,
+		baseURL:  strings.TrimRight(cfg.BaseURL, "/"),
+		tokens:   cfg.Tokens,
+		effort:   newEffortState(cfg.Provider, cfg.Effort, cfg.DropEffort, cfg.Logger),
+		headers:  headers,
+		http:     &http.Client{Timeout: timeout},
 	}
 }
 
@@ -128,16 +133,23 @@ type oaiResponse struct {
 	} `json:"error"`
 }
 
-// Complete runs one inference call.
+// Complete runs one inference call, retrying once without the reasoning hint
+// if the model turns out to reject it.
 func (o *OpenAI) Complete(ctx context.Context, req Request) (*Response, error) {
+	resp, err := o.complete(ctx, req)
+	if err != nil && o.effort.retryWithout(req.Effort, err) {
+		return o.complete(ctx, req)
+	}
+	return resp, err
+}
+
+func (o *OpenAI) complete(ctx context.Context, req Request) (*Response, error) {
 	body := oaiRequest{
 		Model:     o.model,
 		MaxTokens: req.MaxTokens,
 		Messages:  make([]oaiMessage, 0, len(req.Messages)+1),
 	}
-	if !o.dropEffort {
-		body.ReasoningEffort = req.Effort
-	}
+	body.ReasoningEffort = o.effort.resolve(req.Effort)
 
 	// System goes first and stays byte-identical across turns so the provider's
 	// prompt cache can hit on it. Volatile data belongs in the last user turn.

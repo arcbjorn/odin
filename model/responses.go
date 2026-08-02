@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -23,6 +24,7 @@ type Responses struct {
 	http     *http.Client
 	codex    bool
 	xai      bool
+	effort   effortState
 }
 
 type ResponsesConfig struct {
@@ -32,7 +34,10 @@ type ResponsesConfig struct {
 	Tokens   TokenSource
 	Codex    bool
 	XAI      bool
-	Timeout  time.Duration
+	// Effort overrides the profile-wide reasoning level for this provider.
+	Effort  string
+	Timeout time.Duration
+	Logger  *slog.Logger
 }
 
 func NewResponses(cfg ResponsesConfig) *Responses {
@@ -48,6 +53,9 @@ func NewResponses(cfg ResponsesConfig) *Responses {
 		http:     &http.Client{Timeout: timeout},
 		codex:    cfg.Codex,
 		xai:      cfg.XAI,
+		// xAI's Responses endpoint has no reasoning field at all, so the hint
+		// is disabled outright rather than probed for.
+		effort: newEffortState(cfg.Provider, cfg.Effort, cfg.XAI, cfg.Logger),
 	}
 }
 
@@ -136,6 +144,14 @@ func appendResponsesInput(input []json.RawMessage, item responsesInput) []json.R
 }
 
 func (r *Responses) Complete(ctx context.Context, req Request) (*Response, error) {
+	resp, err := r.complete(ctx, req)
+	if err != nil && r.effort.retryWithout(req.Effort, err) {
+		return r.complete(ctx, req)
+	}
+	return resp, err
+}
+
+func (r *Responses) complete(ctx context.Context, req Request) (*Response, error) {
 	body := responsesRequest{
 		Model:        r.model,
 		Instructions: req.System,
@@ -149,8 +165,8 @@ func (r *Responses) Complete(ctx context.Context, req Request) (*Response, error
 	if !r.codex {
 		body.MaxOutputTokens = req.MaxTokens
 	}
-	if req.Effort != "" && !r.xai {
-		body.Reasoning = &responsesReasoning{Effort: req.Effort}
+	if effort := r.effort.resolve(req.Effort); effort != "" {
+		body.Reasoning = &responsesReasoning{Effort: effort}
 		body.Reasoning.Summary = "auto"
 		if r.codex {
 			// codex reasons before acting and seals the reasoning item; asking
