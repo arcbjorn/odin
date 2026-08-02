@@ -18,10 +18,23 @@ import (
 
 // Runtime is a profile assembled into live components.
 type Runtime struct {
-	Profile  *Profile
+	Profile *Profile
+	// Provider is the chain from config.toml. It is never switched, so
+	// anything bound to it keeps the committed configuration.
 	Provider model.Provider
 	Tools    *agent.Registry
-	Loop     *agent.Loop
+	// Loop runs scheduled jobs against Provider. A /model switch does not
+	// reach it: a job's model is whatever config.toml says, always.
+	Loop *agent.Loop
+
+	// Router is the swappable provider behind interactive turns.
+	Router *model.Router
+	// Switcher resolves and applies /model changes. Nil only when the
+	// profile configures no providers, which Load already rejects.
+	Switcher *Switcher
+	// Chat runs interactive turns (Telegram, `odin ask`) through Router, so a
+	// switch takes effect without rebuilding the agent or losing history.
+	Chat *agent.Loop
 
 	// DB is nil when the db toolset is not enabled.
 	DB       *sql.DB
@@ -54,12 +67,41 @@ func Build(p *Profile, log *slog.Logger) (*Runtime, error) {
 		return nil, err
 	}
 
-	provider, err := buildProvider(p, log)
+	// Credentials are resolved once and reused: a later /model switch rebuilds
+	// transports, and a second token source over the same OAuth credential
+	// would race the first one's refresh.
+	tokens, err := providerTokens(p)
+	if err != nil {
+		return nil, err
+	}
+	provider, err := buildProviderWith(p, tokens, log)
 	if err != nil {
 		return nil, err
 	}
 
 	rt := &Runtime{Profile: p, Provider: provider, Tools: agent.NewRegistry(), Location: location}
+	rt.Router = model.NewRouter(provider)
+	rt.Switcher, err = NewSwitcher(p, rt.Router, tokens, log)
+	if err != nil {
+		return nil, err
+	}
+	// A persisted override is applied offline — no catalog call — so startup
+	// stays fast and a provider that is merely unreachable at boot does not
+	// discard the user's choice. An override that no longer resolves is
+	// reported and dropped rather than failing the whole start.
+	if overrideProvider, overrideModel, err := p.ModelOverride(); err != nil {
+		log.Warn("could not read stored model override", "error", err)
+	} else if overrideProvider != "" {
+		if err := rt.Switcher.applyStored(overrideProvider, overrideModel); err != nil {
+			log.Warn("ignoring stored model override",
+				"provider", overrideProvider, "model", overrideModel, "error", err)
+			if clearErr := p.SetModelOverride("", ""); clearErr != nil {
+				log.Warn("could not clear stale model override", "error", clearErr)
+			}
+		} else {
+			log.Info("interactive model override active", "target", rt.Switcher.Target().String())
+		}
+	}
 
 	if p.HasToolset("db") {
 		db, err := tools.OpenDB(p.DBPath)
@@ -145,7 +187,11 @@ func Build(p *Profile, log *slog.Logger) (*Runtime, error) {
 		}
 	}
 
-	loop, err := agent.New(agent.Config{
+	// Two loops over one tool registry and one system prompt, differing only in
+	// which provider they call. Jobs get the committed chain; interactive
+	// turns get the router, so /model moves the conversation without ever
+	// moving the schedule.
+	loopCfg := agent.Config{
 		Provider:  provider,
 		Tools:     rt.Tools,
 		Logger:    log,
@@ -153,12 +199,22 @@ func Build(p *Profile, log *slog.Logger) (*Runtime, error) {
 		MaxTurns:  p.Config.MaxTurns,
 		MaxTokens: p.Config.MaxTokens,
 		Effort:    p.Config.Effort,
-	})
+	}
+	loop, err := agent.New(loopCfg)
 	if err != nil {
 		rt.Close()
 		return nil, err
 	}
 	rt.Loop = loop
+
+	chatCfg := loopCfg
+	chatCfg.Provider = rt.Router
+	chat, err := agent.New(chatCfg)
+	if err != nil {
+		rt.Close()
+		return nil, err
+	}
+	rt.Chat = chat
 	return rt, nil
 }
 
@@ -211,69 +267,25 @@ func (r *Runtime) System() string {
 
 // buildProvider assembles the fallback chain from config, in order.
 func buildProvider(p *Profile, log *slog.Logger) (model.Provider, error) {
+	sources, err := providerTokens(p)
+	if err != nil {
+		return nil, err
+	}
+	return buildProviderWith(p, sources, log)
+}
+
+// buildProviderWith assembles the chain from already resolved credentials.
+func buildProviderWith(p *Profile, sources map[string]model.TokenSource, log *slog.Logger) (model.Provider, error) {
 	providers := make([]model.Provider, 0, len(p.Config.Providers))
 
 	for _, pc := range p.Config.Providers {
-		tokens, err := tokenSource(p, pc)
+		tokens, ok := sources[pc.Name]
+		if !ok {
+			return nil, fmt.Errorf("provider %q: no resolved credential", pc.Name)
+		}
+		provider, err := buildTransport(pc, tokens)
 		if err != nil {
 			return nil, err
-		}
-
-		baseURL := providerBaseURL(pc)
-		var provider model.Provider
-		switch providerAPIMode(pc) {
-		case "anthropic_messages":
-			if pc.Subscription == "minimax" && !strings.HasSuffix(strings.TrimRight(baseURL, "/"), "/v1") {
-				baseURL = strings.TrimRight(baseURL, "/") + "/v1"
-			}
-			userAgent := ""
-			if pc.Subscription == "claude" {
-				userAgent = claudeCodeUserAgent()
-			}
-			provider = model.NewAnthropic(model.AnthropicConfig{
-				Provider: pc.Name, Model: pc.Model, BaseURL: baseURL, Tokens: tokens,
-				Bearer:        pc.Subscription == "claude" || pc.Subscription == "minimax",
-				OAuthIdentity: pc.Subscription == "claude",
-				UserAgent:     userAgent,
-				DropThinking:  !strings.Contains(strings.ToLower(pc.Model), "claude"),
-			})
-		case "responses":
-			provider = model.NewResponses(model.ResponsesConfig{
-				Provider: pc.Name, Model: pc.Model, BaseURL: baseURL, Tokens: tokens,
-				Codex: pc.Subscription == "codex", XAI: pc.Subscription == "xai",
-			})
-		case "chat_completions":
-			headers := map[string]string(nil)
-			dropEffort := pc.DropEffort
-			if pc.Subscription == "xai" {
-				// The standard xAI API takes the subscription token as a plain
-				// bearer and needs no proxy-specific headers. reasoning_effort
-				// is accepted on grok-4.5; leave DropEffort to config.
-			}
-			if pc.Subscription == "kimi" {
-				headers = map[string]string{"User-Agent": "github.com/arcbjorn/odin/1"}
-			}
-			provider = model.NewOpenAI(model.OpenAIConfig{
-				Provider:   pc.Name,
-				Model:      pc.Model,
-				BaseURL:    baseURL,
-				Tokens:     tokens,
-				DropEffort: dropEffort,
-				Headers:    headers,
-			})
-		default:
-			return nil, fmt.Errorf("provider %q: could not resolve api mode", pc.Name)
-		}
-
-		if usageKind := providerUsageKind(pc, baseURL); usageKind != "" {
-			provider = model.WithAccountUsage(provider, model.AccountUsageConfig{
-				Kind:            usageKind,
-				Provider:        pc.Name,
-				BaseURL:         baseURL,
-				Tokens:          tokens,
-				WorkspaceID:     os.Getenv("OPENCODE_GO_WORKSPACE_ID"),
-				DashboardCookie: os.Getenv("OPENCODE_GO_AUTH_COOKIE"),
-			})
 		}
 		providers = append(providers, provider)
 	}
@@ -282,6 +294,92 @@ func buildProvider(p *Profile, log *slog.Logger) (model.Provider, error) {
 		return providers[0], nil
 	}
 	return model.NewChain(model.ChainConfig{Providers: providers, Logger: log})
+}
+
+// providerTokens resolves one token source per configured provider.
+//
+// Resolved once and shared for the process lifetime: rebuilding a transport
+// after a /model switch must reuse that provider's existing source. Two
+// sources over one credential would refresh the same OAuth token
+// independently and race each other's rotation.
+func providerTokens(p *Profile) (map[string]model.TokenSource, error) {
+	sources := make(map[string]model.TokenSource, len(p.Config.Providers))
+	for _, pc := range p.Config.Providers {
+		tokens, err := tokenSource(p, pc)
+		if err != nil {
+			return nil, err
+		}
+		sources[pc.Name] = tokens
+	}
+	return sources, nil
+}
+
+// buildTransport constructs one provider from its config and an already
+// resolved token source.
+//
+// The model name is an input to construction, not merely a per-request field:
+// it selects the wire protocol on aggregator endpoints (see providerAPIMode)
+// and decides whether Anthropic thinking fields are sent at all. That is why
+// switching models rebuilds the transport rather than mutating a field —
+// mutation would keep the previous model's protocol.
+func buildTransport(pc ProviderConfig, tokens model.TokenSource) (model.Provider, error) {
+	baseURL := providerBaseURL(pc)
+	var provider model.Provider
+	switch providerAPIMode(pc) {
+	case "anthropic_messages":
+		if pc.Subscription == "minimax" && !strings.HasSuffix(strings.TrimRight(baseURL, "/"), "/v1") {
+			baseURL = strings.TrimRight(baseURL, "/") + "/v1"
+		}
+		userAgent := ""
+		if pc.Subscription == "claude" {
+			userAgent = claudeCodeUserAgent()
+		}
+		provider = model.NewAnthropic(model.AnthropicConfig{
+			Provider: pc.Name, Model: pc.Model, BaseURL: baseURL, Tokens: tokens,
+			Bearer:        pc.Subscription == "claude" || pc.Subscription == "minimax",
+			OAuthIdentity: pc.Subscription == "claude",
+			UserAgent:     userAgent,
+			DropThinking:  !strings.Contains(strings.ToLower(pc.Model), "claude"),
+		})
+	case "responses":
+		provider = model.NewResponses(model.ResponsesConfig{
+			Provider: pc.Name, Model: pc.Model, BaseURL: baseURL, Tokens: tokens,
+			Codex: pc.Subscription == "codex", XAI: pc.Subscription == "xai",
+		})
+	case "chat_completions":
+		headers := map[string]string(nil)
+		dropEffort := pc.DropEffort
+		if pc.Subscription == "xai" {
+			// The standard xAI API takes the subscription token as a plain
+			// bearer and needs no proxy-specific headers. reasoning_effort
+			// is accepted on grok-4.5; leave DropEffort to config.
+		}
+		if pc.Subscription == "kimi" {
+			headers = map[string]string{"User-Agent": "github.com/arcbjorn/odin/1"}
+		}
+		provider = model.NewOpenAI(model.OpenAIConfig{
+			Provider:   pc.Name,
+			Model:      pc.Model,
+			BaseURL:    baseURL,
+			Tokens:     tokens,
+			DropEffort: dropEffort,
+			Headers:    headers,
+		})
+	default:
+		return nil, fmt.Errorf("provider %q: could not resolve api mode", pc.Name)
+	}
+
+	if usageKind := providerUsageKind(pc, baseURL); usageKind != "" {
+		provider = model.WithAccountUsage(provider, model.AccountUsageConfig{
+			Kind:            usageKind,
+			Provider:        pc.Name,
+			BaseURL:         baseURL,
+			Tokens:          tokens,
+			WorkspaceID:     os.Getenv("OPENCODE_GO_WORKSPACE_ID"),
+			DashboardCookie: os.Getenv("OPENCODE_GO_AUTH_COOKIE"),
+		})
+	}
+	return provider, nil
 }
 
 func providerUsageKind(pc ProviderConfig, baseURL string) model.AccountUsageKind {
