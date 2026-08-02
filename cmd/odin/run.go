@@ -246,6 +246,7 @@ func buildGateway(rt *profile.Runtime, log *slog.Logger) (*gateway.Telegram, err
 		Logger:     log,
 		ModelChain: chain,
 		Switcher:   rt.Switcher,
+		OutboxPath: filepath.Join(rt.Profile.StateDir, "outbox.json"),
 	})
 }
 

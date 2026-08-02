@@ -57,6 +57,9 @@ type Telegram struct {
 	// which is what a gateway built without a runtime gets.
 	switcher ModelSwitcher
 
+	// outbox holds job messages whose delivery failed, retried on each poll.
+	outbox *outbox
+
 	mu       sync.Mutex
 	sessions map[int64]*session
 	// deletable tracks message IDs per chat that /new may delete to clear the
@@ -124,6 +127,10 @@ type TelegramConfig struct {
 	// Switcher lets /model change the model for interactive turns. Optional:
 	// without it /model still reports, it just cannot switch.
 	Switcher ModelSwitcher
+
+	// OutboxPath persists messages a scheduled job could not deliver, so they
+	// survive a restart. Empty keeps the queue in memory for this process.
+	OutboxPath string
 }
 
 // ModelSwitcher is the gateway's view of the runtime's model selection.
@@ -184,6 +191,7 @@ func NewTelegram(cfg TelegramConfig) (*Telegram, error) {
 		sessionTTL: ttl,
 		modelChain: cfg.ModelChain,
 		switcher:   cfg.Switcher,
+		outbox:     newOutbox(cfg.OutboxPath, cfg.Logger),
 		sessions:   make(map[int64]*session),
 		deletable:  make(map[int64][]int64),
 		// Slightly longer than the poll timeout so the request itself does not
@@ -274,6 +282,12 @@ func (t *Telegram) Run(ctx context.Context) error {
 		for _, u := range updates {
 			t.handle(ctx, u)
 		}
+
+		// Retry undelivered job output on the same beat as the poll. The loop
+		// already wakes roughly once a minute and only runs when Telegram is
+		// reachable, so it needs no timer of its own — and a queue that is
+		// empty, which is the normal case, costs nothing here.
+		t.outbox.flush(ctx, t.send, time.Now())
 	}
 }
 
@@ -353,10 +367,10 @@ func (t *Telegram) respond(ctx context.Context, chatID int64, text string) {
 		// and reset the conversation.
 		case "/start", "/new":
 			t.clearChat(ctx, chatID)
-			t.send(ctx, chatID, "Cleared.")
+			t.reply(ctx, chatID, "Cleared.")
 			return
 		case "/model":
-			t.send(ctx, chatID, t.handleModel(ctx, strings.TrimSpace(args)))
+			t.reply(ctx, chatID, t.handleModel(ctx, strings.TrimSpace(args)))
 			return
 		}
 		// Any other slash command falls through to the agent as ordinary input.
@@ -377,10 +391,10 @@ func (t *Telegram) respond(ctx context.Context, chatID int64, text string) {
 		}
 		// The failed turn is simply never committed, so a broken exchange is
 		// not replayed on every subsequent message.
-		t.send(ctx, chatID, reply)
+		t.reply(ctx, chatID, reply)
 		return
 	}
 
 	sess.commit(updated, time.Now())
-	t.send(ctx, chatID, reply)
+	t.reply(ctx, chatID, reply)
 }

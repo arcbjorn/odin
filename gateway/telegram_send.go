@@ -8,20 +8,35 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 )
 
 // send delivers a reply, splitting it if it exceeds Telegram's limit.
-func (t *Telegram) send(ctx context.Context, chatID int64, text string) {
+//
+// It returns the text that never landed alongside the failure. A caller that
+// must not lose the message can then queue exactly the remainder instead of
+// repeating chunks the user already received.
+func (t *Telegram) send(ctx context.Context, chatID int64, text string) (undelivered string, err error) {
 	text = strings.TrimSpace(text)
 	if text == "" {
-		return
+		return "", nil
 	}
-	for _, chunk := range splitMessage(text, maxMessageRunes) {
+	chunks := splitMessage(text, maxMessageRunes)
+	for i, chunk := range chunks {
 		if err := t.sendChunk(ctx, chatID, chunk); err != nil {
 			t.log.Error("send failed", "chat_id", chatID, "error", err)
-			return
+			return strings.Join(chunks[i:], "\n\n"), err
 		}
 	}
+	return "", nil
+}
+
+// reply sends an answer to an interactive turn. The failure is already logged
+// inside send and there is nothing further to do with it: the user is present
+// and will ask again, so queueing a chat reply for later would deliver an
+// answer to a question they have moved on from.
+func (t *Telegram) reply(ctx context.Context, chatID int64, text string) {
+	_, _ = t.send(ctx, chatID, text)
 }
 
 // sendChunk delivers one chunk via Bot API 10.1 sendRichMessage, which renders
@@ -74,14 +89,27 @@ func (t *Telegram) sendChatAction(ctx context.Context, chatID int64, action stri
 }
 
 // Notify pushes an unsolicited message — how scheduled jobs reach the user.
+//
+// A failure is both queued and returned. Queued, because nobody is waiting on
+// a 07:00 brief to notice it never arrived and ask again — the tokens are
+// already spent, so the content is worth a retry. Returned, because the run
+// still failed: swallowing it would record the job as successful and leave the
+// watchdog with nothing to alert on, which is the exact silence it exists for.
 func (t *Telegram) Notify(ctx context.Context, chatID int64, text string) error {
 	if !t.allowed[chatID] {
 		// chat_id and user_id match for direct messages; a mismatch means a
-		// misconfigured job target.
+		// misconfigured job target. Never queue it: no retry fixes a message
+		// addressed to someone who is not allowed to receive it.
 		return fmt.Errorf("chat %d is not in the allowlist", chatID)
 	}
-	t.send(ctx, chatID, text)
-	return nil
+	undelivered, err := t.send(ctx, chatID, text)
+	if err == nil {
+		return nil
+	}
+	if undelivered != "" {
+		t.outbox.queue(chatID, undelivered, time.Now())
+	}
+	return fmt.Errorf("deliver to chat %d (queued for retry): %w", chatID, err)
 }
 
 func (t *Telegram) call(ctx context.Context, method string, params url.Values) (json.RawMessage, error) {

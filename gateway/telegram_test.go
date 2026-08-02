@@ -60,6 +60,33 @@ type fakeTelegram struct {
 	nextMsgID   int64   // monotonic id handed back by sendMessage
 	setCommands int     // times setMyCommands was called
 	getResult   string  // what getMyCommands returns (default: empty set)
+
+	// failSends makes send methods return an API error, standing in for a
+	// Telegram outage. sendsBeforeFail lets the first N succeed, which is how
+	// a partially delivered multi-chunk message is reproduced.
+	failSends       bool
+	sendsBeforeFail int
+}
+
+// shouldFailSend reports whether this send is the one that fails, counting
+// successful sends against sendsBeforeFail. Callers must hold f.mu.
+func (f *fakeTelegram) shouldFailSend() bool {
+	if !f.failSends {
+		return false
+	}
+	if f.sendsBeforeFail > 0 {
+		f.sendsBeforeFail--
+		return false
+	}
+	return true
+}
+
+// setFailSends switches the stub into and out of its outage.
+func (f *fakeTelegram) setFailSends(fail bool, succeedFirst int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.failSends = fail
+	f.sendsBeforeFail = succeedFirst
 }
 
 func (f *fakeTelegram) server(t *testing.T) *httptest.Server {
@@ -77,6 +104,13 @@ func (f *fakeTelegram) server(t *testing.T) *httptest.Server {
 			}
 			json.Unmarshal([]byte(r.FormValue("rich_message")), &rm)
 			f.mu.Lock()
+			if f.shouldFailSend() {
+				f.mu.Unlock()
+				// Not one of the "method missing" descriptions, so the gateway
+				// treats it as a transient outage rather than latching rich off.
+				io.WriteString(w, `{"ok":false,"description":"Bad Gateway"}`)
+				return
+			}
 			f.sent = append(f.sent, rm.Markdown)
 			f.nextMsgID++
 			id := f.nextMsgID
@@ -85,6 +119,11 @@ func (f *fakeTelegram) server(t *testing.T) *httptest.Server {
 			return
 		case strings.HasSuffix(r.URL.Path, "/sendMessage"):
 			f.mu.Lock()
+			if f.shouldFailSend() {
+				f.mu.Unlock()
+				io.WriteString(w, `{"ok":false,"description":"Bad Gateway"}`)
+				return
+			}
 			f.sent = append(f.sent, r.FormValue("text"))
 			f.nextMsgID++
 			id := f.nextMsgID
