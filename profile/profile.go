@@ -136,6 +136,12 @@ type ProviderConfig struct {
 	// DropEffort suppresses reasoning_effort for models that reject it with
 	// HTTP 400 even though they do reason.
 	DropEffort bool
+
+	// Effort overrides [agent].effort for this provider. One level cannot fit
+	// a chain whose members are different model families, and /model can move
+	// a conversation onto a model the profile-wide default was never chosen
+	// for. Empty defers to [agent].effort.
+	Effort string
 }
 
 // TelegramConfig configures the chat gateway.
@@ -289,6 +295,12 @@ func (p *Profile) validate() error {
 		default:
 			return fmt.Errorf("provider %q: unknown api_mode %q", pr.Name, pr.APIMode)
 		}
+		if !validEffort(pr.Effort) {
+			return fmt.Errorf("provider %q: effort %q is not one of low, medium, high", pr.Name, pr.Effort)
+		}
+		if pr.Effort != "" && pr.DropEffort {
+			return fmt.Errorf("provider %q: effort and drop_effort are mutually exclusive", pr.Name)
+		}
 		switch pr.Subscription {
 		case "", "codex", "claude", "xai", "minimax", "qwen", "kimi":
 		default:
@@ -377,12 +389,21 @@ func (p *Profile) validate() error {
 		return fmt.Errorf("web reader_key_env %q is not a valid environment variable name", p.Config.Web.ReaderKeyEnv)
 	}
 
-	switch p.Config.Effort {
-	case "", "low", "medium", "high":
-	default:
+	if !validEffort(p.Config.Effort) {
 		return fmt.Errorf("effort %q is not one of low, medium, high", p.Config.Effort)
 	}
 	return nil
+}
+
+// validEffort accepts the portable levels every provider Odin speaks to
+// understands. A level only some of them accept would turn a fallback into a
+// 400, which the chain treats as fatal rather than retryable.
+func validEffort(effort string) bool {
+	switch effort {
+	case "", "low", "medium", "high":
+		return true
+	}
+	return false
 }
 
 func validateSubscriptionTransport(pr ProviderConfig) error {

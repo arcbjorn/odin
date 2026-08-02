@@ -253,6 +253,12 @@ func assign(cfg *Config, section, key, value string, lineNo int) error {
 				return fmt.Errorf("line %d: drop_effort: %w", lineNo, err)
 			}
 			p.DropEffort = b
+		case "effort":
+			s, err := parseString(value)
+			if err != nil {
+				return fmt.Errorf("line %d: effort: %w", lineNo, err)
+			}
+			p.Effort = s
 		// A secret in config.toml would end up in git and in backups. The
 		// only supported paths are an env var or the OAuth store.
 		case "api_key", "token", "secret", "password":

@@ -283,7 +283,7 @@ func buildProviderWith(p *Profile, sources map[string]model.TokenSource, log *sl
 		if !ok {
 			return nil, fmt.Errorf("provider %q: no resolved credential", pc.Name)
 		}
-		provider, err := buildTransport(pc, tokens)
+		provider, err := buildTransport(pc, tokens, log)
 		if err != nil {
 			return nil, err
 		}
@@ -322,7 +322,7 @@ func providerTokens(p *Profile) (map[string]model.TokenSource, error) {
 // and decides whether Anthropic thinking fields are sent at all. That is why
 // switching models rebuilds the transport rather than mutating a field —
 // mutation would keep the previous model's protocol.
-func buildTransport(pc ProviderConfig, tokens model.TokenSource) (model.Provider, error) {
+func buildTransport(pc ProviderConfig, tokens model.TokenSource, log *slog.Logger) (model.Provider, error) {
 	baseURL := providerBaseURL(pc)
 	var provider model.Provider
 	switch providerAPIMode(pc) {
@@ -339,12 +339,15 @@ func buildTransport(pc ProviderConfig, tokens model.TokenSource) (model.Provider
 			Bearer:        pc.Subscription == "claude" || pc.Subscription == "minimax",
 			OAuthIdentity: pc.Subscription == "claude",
 			UserAgent:     userAgent,
+			Effort:        pc.Effort,
+			Logger:        log,
 			DropThinking:  !strings.Contains(strings.ToLower(pc.Model), "claude"),
 		})
 	case "responses":
 		provider = model.NewResponses(model.ResponsesConfig{
 			Provider: pc.Name, Model: pc.Model, BaseURL: baseURL, Tokens: tokens,
 			Codex: pc.Subscription == "codex", XAI: pc.Subscription == "xai",
+			Effort: pc.Effort, Logger: log,
 		})
 	case "chat_completions":
 		headers := map[string]string(nil)
@@ -363,7 +366,9 @@ func buildTransport(pc ProviderConfig, tokens model.TokenSource) (model.Provider
 			BaseURL:    baseURL,
 			Tokens:     tokens,
 			DropEffort: dropEffort,
+			Effort:     pc.Effort,
 			Headers:    headers,
+			Logger:     log,
 		})
 	default:
 		return nil, fmt.Errorf("provider %q: could not resolve api mode", pc.Name)

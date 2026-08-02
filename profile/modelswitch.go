@@ -76,7 +76,7 @@ func NewSwitcher(p *Profile, router *model.Router, tokens map[string]model.Token
 		catalogs: make(map[string]model.Provider, len(p.Config.Providers)),
 	}
 	for _, pc := range p.Config.Providers {
-		transport, err := buildTransport(pc, tokens[pc.Name])
+		transport, err := buildTransport(pc, tokens[pc.Name], log)
 		if err != nil {
 			return nil, err
 		}
@@ -359,7 +359,7 @@ func (s *Switcher) buildSwitched(target ModelTarget) (model.Provider, error) {
 	ordered := append([]ProviderConfig{selected}, rest...)
 	providers := make([]model.Provider, 0, len(ordered))
 	for _, pc := range ordered {
-		transport, err := buildTransport(pc, s.tokens[pc.Name])
+		transport, err := buildTransport(pc, s.tokens[pc.Name], s.log)
 		if err != nil {
 			return nil, err
 		}
