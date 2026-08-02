@@ -54,21 +54,105 @@ func sameCommands(a, b []botCommand) bool {
 	return true
 }
 
-// clearChat deletes the tracked messages and resets the conversation. Telegram
-// only lets a bot delete messages from the last 48h, and only ones it has the
-// ID for (since this process started), so this clears the recent visible chat
-// rather than the entire history — the most a bot can do. Deletion is best
-// effort: a message too old or already gone is skipped silently.
-func (t *Telegram) clearChat(ctx context.Context, chatID int64) {
+// clearedContext describes what a reset actually dropped.
+//
+// "Cleared." alone leaves the user guessing whether the agent had any recent
+// context at all, which is the one thing they wanted to know by clearing it.
+type clearedContext struct {
+	// exchanges counts the user's own turns, not raw messages: tool calls and
+	// tool results inflate the history without being anything he said.
+	exchanges int
+	// span is how long the dropped conversation ran.
+	span time.Duration
+}
+
+// clearChat deletes the tracked messages and resets the conversation, and
+// reports what was dropped. Telegram only lets a bot delete messages from the
+// last 48h, and only ones it has the ID for (since this process started), so
+// this clears the recent visible chat rather than the entire history — the most
+// a bot can do. Deletion is best effort: a message too old or already gone is
+// skipped silently.
+func (t *Telegram) clearChat(ctx context.Context, chatID int64) clearedContext {
 	t.mu.Lock()
 	ids := t.deletable[chatID]
+	sess := t.sessions[chatID]
 	delete(t.deletable, chatID)
 	delete(t.sessions, chatID)
 	t.mu.Unlock()
 
+	var cleared clearedContext
+	if sess != nil {
+		cleared = sess.summarize(time.Now())
+	}
+
 	for _, id := range ids {
 		t.deleteMessage(ctx, chatID, id)
 	}
+	return cleared
+}
+
+func (s *session) summarize(now time.Time) clearedContext {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var out clearedContext
+	for _, m := range s.history {
+		if m.Role == model.RoleUser {
+			out.exchanges++
+		}
+	}
+	if out.exchanges > 0 && !s.startedAt.IsZero() {
+		out.span = now.Sub(s.startedAt)
+	}
+	return out
+}
+
+// contextResetReport says what was dropped and, more importantly, what was
+// not. A reset is not amnesia — the persona, the skills, the notes and the
+// database all survive it — and without that line the honest reading of
+// "Cleared." is that the agent just forgot everything it knows.
+func (t *Telegram) contextResetReport(cleared clearedContext) string {
+	kept := t.keptSummary
+	if kept == "" {
+		kept = "persona and profile data"
+	}
+
+	if cleared.exchanges == 0 {
+		// Worth naming the idle timeout here: finding the context already
+		// empty is exactly when someone wonders whether the agent forgot on
+		// its own, and it did.
+		return "Context was already empty — nothing had been said since it last cleared" +
+			" (chat memory also clears itself after " + humanDuration(t.sessionTTL) + " idle).\n" +
+			"Kept: " + kept + "."
+	}
+
+	turns := "1 exchange"
+	if cleared.exchanges > 1 {
+		turns = fmt.Sprintf("%d exchanges", cleared.exchanges)
+	}
+	// A span only carries information once it is worth stating; "1 exchange
+	// over under a minute" is noise dressed as detail.
+	if cleared.span < time.Minute {
+		return fmt.Sprintf("Context cleared — %s dropped.\nKept: %s.", turns, kept)
+	}
+	return fmt.Sprintf("Context cleared — %s over %s dropped.\nKept: %s.",
+		turns, humanDuration(cleared.span), kept)
+}
+
+// humanDuration renders a span the way someone would say it out loud.
+func humanDuration(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return "under a minute"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	}
+	hours := int(d.Hours())
+	minutes := int(d.Minutes()) % 60
+	if minutes == 0 {
+		return fmt.Sprintf("%dh", hours)
+	}
+	return fmt.Sprintf("%dh %dm", hours, minutes)
 }
 
 func (t *Telegram) deleteMessage(ctx context.Context, chatID, msgID int64) {

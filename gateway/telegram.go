@@ -60,6 +60,9 @@ type Telegram struct {
 	// outbox holds job messages whose delivery failed, retried on each poll.
 	outbox *outbox
 
+	// keptSummary names what survives a /new, for the reset report.
+	keptSummary string
+
 	mu       sync.Mutex
 	sessions map[int64]*session
 	// deletable tracks message IDs per chat that /new may delete to clear the
@@ -83,9 +86,10 @@ type Telegram struct {
 type session struct {
 	busy sync.Mutex
 
-	mu       sync.Mutex
-	history  []model.Message
-	lastSeen time.Time
+	mu        sync.Mutex
+	history   []model.Message
+	lastSeen  time.Time
+	startedAt time.Time
 }
 
 func (s *session) snapshot() []model.Message {
@@ -131,6 +135,12 @@ type TelegramConfig struct {
 	// OutboxPath persists messages a scheduled job could not deliver, so they
 	// survive a restart. Empty keeps the queue in memory for this process.
 	OutboxPath string
+
+	// KeptSummary names what a context reset does NOT touch — "persona,
+	// skills, notes, database" — so the reply can say a reset is not amnesia.
+	// The gateway cannot know this itself; it is built from the profile's
+	// enabled toolsets. Empty falls back to a generic phrase.
+	KeptSummary string
 }
 
 // ModelSwitcher is the gateway's view of the runtime's model selection.
@@ -186,17 +196,18 @@ func NewTelegram(cfg TelegramConfig) (*Telegram, error) {
 	}
 
 	return &Telegram{
-		token:      cfg.Token,
-		allowed:    allowed,
-		agent:      cfg.Agent,
-		log:        cfg.Logger,
-		baseURL:    telegramAPI,
-		sessionTTL: ttl,
-		modelChain: cfg.ModelChain,
-		switcher:   cfg.Switcher,
-		outbox:     newOutbox(cfg.OutboxPath, cfg.Logger),
-		sessions:   make(map[int64]*session),
-		deletable:  make(map[int64][]int64),
+		token:       cfg.Token,
+		allowed:     allowed,
+		agent:       cfg.Agent,
+		log:         cfg.Logger,
+		baseURL:     telegramAPI,
+		sessionTTL:  ttl,
+		modelChain:  cfg.ModelChain,
+		switcher:    cfg.Switcher,
+		outbox:      newOutbox(cfg.OutboxPath, cfg.Logger),
+		keptSummary: cfg.KeptSummary,
+		sessions:    make(map[int64]*session),
+		deletable:   make(map[int64][]int64),
 		// Slightly longer than the poll timeout so the request itself does not
 		// time out mid-long-poll.
 		http: &http.Client{Timeout: 70 * time.Second},
@@ -369,8 +380,8 @@ func (t *Telegram) respond(ctx context.Context, chatID int64, text string) {
 		// sends when a chat is first opened. Both delete the tracked messages
 		// and reset the conversation.
 		case "/start", "/new":
-			t.clearChat(ctx, chatID)
-			t.reply(ctx, chatID, "Cleared.")
+			cleared := t.clearChat(ctx, chatID)
+			t.reply(ctx, chatID, t.contextResetReport(cleared))
 			return
 		case "/model":
 			t.reply(ctx, chatID, t.handleModel(ctx, strings.TrimSpace(args)))

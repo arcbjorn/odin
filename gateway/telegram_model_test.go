@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/arcbjorn/odin/model"
 )
@@ -396,5 +397,105 @@ func TestModelOnceVerifyComposes(t *testing.T) {
 	}
 	if len(sw.scopes) != 1 || sw.scopes[0] != model.SwitchOnce {
 		t.Fatalf("scopes = %v, want SwitchOnce", sw.scopes)
+	}
+}
+
+// "Cleared." alone left him guessing whether the agent had any recent context,
+// which is the one thing clearing it was meant to answer.
+func TestContextResetReportsWhatWasDropped(t *testing.T) {
+	agent := &fakeAgent{reply: "ok"}
+	g, fake := newGateway(t, agent, []int64{1})
+	g.keptSummary = "persona, skills, notes, database"
+
+	g.respond(context.Background(), 1, "first")
+	g.respond(context.Background(), 1, "second")
+	// Backdate the session so the span is a real number. Resolve it once:
+	// session() reads lastSeen under the session's own mutex, so calling it
+	// while holding that mutex deadlocks.
+	sess := g.session(1)
+	sess.mu.Lock()
+	sess.startedAt = time.Now().Add(-3*time.Hour - 10*time.Minute)
+	sess.mu.Unlock()
+
+	g.respond(context.Background(), 1, "/new")
+
+	last := lastMessage(t, fake)
+	for _, want := range []string{"2 exchanges", "3h 10m", "persona, skills, notes, database"} {
+		if !strings.Contains(last, want) {
+			t.Fatalf("reset report missing %q: %q", want, last)
+		}
+	}
+}
+
+// Tool calls and tool results are not things he said, so counting raw messages
+// would report a conversation longer than the one he had.
+func TestContextResetCountsUserTurnsOnly(t *testing.T) {
+	g, fake := newGateway(t, &fakeAgent{reply: "ok"}, []int64{1})
+
+	sess := g.session(1)
+	sess.commit([]model.Message{
+		{Role: model.RoleUser, Content: "do it"},
+		{Role: model.RoleAssistant, Content: ""},
+		{Role: model.RoleTool, Content: "tool output"},
+		{Role: model.RoleAssistant, Content: "done"},
+	}, time.Now())
+
+	g.respond(context.Background(), 1, "/new")
+
+	if last := lastMessage(t, fake); !strings.Contains(last, "1 exchange") {
+		t.Fatalf("want a single exchange counted, got: %q", last)
+	}
+}
+
+// Finding it already empty is exactly when someone wonders whether the agent
+// forgot on its own — so that message names the idle timeout.
+func TestContextResetOnEmptySessionExplainsTheIdleTimeout(t *testing.T) {
+	g, fake := newGateway(t, &fakeAgent{reply: "ok"}, []int64{1})
+	g.keptSummary = "persona, database"
+
+	g.respond(context.Background(), 1, "/new")
+
+	last := lastMessage(t, fake)
+	for _, want := range []string{"already empty", "idle", "persona, database"} {
+		if !strings.Contains(last, want) {
+			t.Fatalf("empty-context report missing %q: %q", want, last)
+		}
+	}
+	if strings.Contains(last, "exchange") {
+		t.Fatalf("nothing was dropped, so nothing should be counted: %q", last)
+	}
+}
+
+// /reset is the life-tracker day-repair command in the personal profile.
+// Intercepting it here would make that flow unreachable.
+func TestResetIsNotAGatewayCommand(t *testing.T) {
+	agent := &fakeAgent{reply: "ok"}
+	g, _ := newGateway(t, agent, []int64{1})
+
+	g.respond(context.Background(), 1, "hello")
+	g.respond(context.Background(), 1, "/reset")
+
+	if agent.callCount() != 2 {
+		t.Fatal("/reset must reach the agent, not clear the chat")
+	}
+	if g.session(1).summarize(time.Now()).exchanges == 0 {
+		t.Fatal("/reset must not drop the conversation")
+	}
+}
+
+func TestHumanDuration(t *testing.T) {
+	cases := []struct {
+		in   time.Duration
+		want string
+	}{
+		{30 * time.Second, "under a minute"},
+		{12 * time.Minute, "12m"},
+		{time.Hour, "1h"},
+		{3*time.Hour + 10*time.Minute, "3h 10m"},
+	}
+	for _, tc := range cases {
+		if got := humanDuration(tc.in); got != tc.want {
+			t.Fatalf("humanDuration(%s) = %q, want %q", tc.in, got, tc.want)
+		}
 	}
 }

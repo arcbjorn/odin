@@ -242,12 +242,31 @@ func buildGateway(rt *profile.Runtime, log *slog.Logger) (*gateway.Telegram, err
 		AllowedUsers: cfg.AllowedUsers,
 		// Chat, not Loop: interactive turns go through the router so /model
 		// can redirect them. Scheduled jobs keep using rt.Loop.
-		Agent:      loopAgent{rt.Chat},
-		Logger:     log,
-		ModelChain: chain,
-		Switcher:   rt.Switcher,
-		OutboxPath: filepath.Join(rt.Profile.StateDir, "outbox.json"),
+		Agent:       loopAgent{rt.Chat},
+		Logger:      log,
+		ModelChain:  chain,
+		Switcher:    rt.Switcher,
+		OutboxPath:  filepath.Join(rt.Profile.StateDir, "outbox.json"),
+		KeptSummary: keptAcrossReset(rt.Profile),
 	})
+}
+
+// keptAcrossReset names what a /new does not touch, from the toolsets that are
+// actually enabled. Built here rather than in the gateway because only the
+// profile knows: claiming a database survives the reset when the db toolset is
+// off would be a confident lie in the one message meant to remove doubt.
+func keptAcrossReset(p *profile.Profile) string {
+	kept := []string{"persona"}
+	for _, toolset := range []struct{ name, label string }{
+		{"skills", "skills"},
+		{"file", "notes"},
+		{"db", "database"},
+	} {
+		if p.HasToolset(toolset.name) {
+			kept = append(kept, toolset.label)
+		}
+	}
+	return strings.Join(kept, ", ")
 }
 
 // loopAgent adapts agent.Loop to the gateway's Agent interface.

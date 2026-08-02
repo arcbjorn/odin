@@ -393,8 +393,13 @@ func TestNewCommandClearsHistory(t *testing.T) {
 	g.respond(ctx, 1, "fresh start")
 
 	msgs := fake.messages()
-	if len(msgs) < 2 || !strings.Contains(msgs[1], "Cleared") {
+	if len(msgs) < 2 || !strings.Contains(msgs[1], "Context cleared") {
 		t.Fatalf("clear not acknowledged: %v", msgs)
+	}
+	// The acknowledgement also has to say what survived, or the honest reading
+	// of it is that the agent forgot everything it knows.
+	if !strings.Contains(msgs[1], "Kept:") {
+		t.Fatalf("clear did not say what it kept: %q", msgs[1])
 	}
 
 	agent.mu.Lock()
