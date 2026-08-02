@@ -216,8 +216,12 @@ func cmdStatus(args []string) error {
 	fmt.Printf("provider  %s\n", rt.Provider.Name())
 	// An active override changes what chat answers with but not what jobs
 	// run, so it has to be visible here rather than inferred from a log line.
-	if target, overridden := rt.Switcher.Current(); overridden {
-		fmt.Printf("chat      %s (runtime override; jobs use the configured chain)\n", target)
+	if selection := rt.Switcher.Current(); selection.Overridden {
+		scope := "runtime override"
+		if selection.Transient {
+			scope = "this process only"
+		}
+		fmt.Printf("chat      %s (%s; jobs use the configured chain)\n", selection.Target, scope)
 	}
 	for _, provider := range p.Config.Providers {
 		if len(provider.Accounts) > 0 {

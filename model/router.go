@@ -18,9 +18,49 @@ type ProviderModels struct {
 	Err    string
 }
 
+// SwitchScope decides whether a switch outlives the process that made it.
+type SwitchScope int
+
+const (
+	// SwitchPersistent writes the choice to the profile's runtime state, so a
+	// restart comes back on it rather than silently reverting.
+	SwitchPersistent SwitchScope = iota
+	// SwitchOnce applies to this process only and leaves the stored choice
+	// alone. Hermes defaults its in-session switches to this on the grounds
+	// that they are usually exploratory; Odin makes it the explicit option
+	// instead, because it targets a daemon rather than a shell session.
+	SwitchOnce
+)
+
+// Selection is the active model choice, as reported to whoever asks.
+type Selection struct {
+	// Target is "provider/model".
+	Target string
+	// Overridden reports that the target differs from config.toml.
+	Overridden bool
+	// Transient reports a SwitchOnce choice: a restart returns to the stored
+	// selection, or to config.toml if there is none.
+	Transient bool
+}
+
+// VerifyResult is a live protocol check against a switch target: can this
+// model actually be reached, and can it run the tool exchange the agent
+// depends on.
+type VerifyResult struct {
+	Target         string
+	CatalogChecked bool
+	ToolCall       bool
+	Continuation   bool
+	// Switched reports whether the check was followed by moving onto it.
+	Switched bool
+}
+
 // SwitchChange records one applied model switch, for reporting back to
 // whoever asked for it.
 type SwitchChange struct {
+	// Transient mirrors SwitchOnce: the choice dies with this process.
+	Transient bool
+
 	// Target and Previous are "provider/model".
 	Target   string
 	Previous string

@@ -99,7 +99,7 @@ func TestSwitchExplicitProviderAndModel(t *testing.T) {
 	p, _ := twoProviderProfile(t, []string{"gpt-5.6-terra", "gpt-5.5"}, []string{"glm-5.2"})
 	sw, _ := newTestSwitcher(t, p)
 
-	change, err := sw.Switch(context.Background(), "primary/gpt-5.5")
+	change, err := sw.Switch(context.Background(), "primary/gpt-5.5", model.SwitchPersistent)
 	if err != nil {
 		t.Fatalf("Switch: %v", err)
 	}
@@ -122,7 +122,7 @@ func TestSwitchTreatsSlashedModelIDAsAModel(t *testing.T) {
 		[]string{"glm-5.2", "moonshotai/kimi-k2-0905"})
 	sw, _ := newTestSwitcher(t, p)
 
-	change, err := sw.Switch(context.Background(), "moonshotai/kimi-k2-0905")
+	change, err := sw.Switch(context.Background(), "moonshotai/kimi-k2-0905", model.SwitchPersistent)
 	if err != nil {
 		t.Fatalf("Switch: %v", err)
 	}
@@ -138,7 +138,7 @@ func TestSwitchBareProviderUsesItsConfiguredModel(t *testing.T) {
 	p, _ := twoProviderProfile(t, []string{"gpt-5.6-terra"}, []string{"glm-5.2"})
 	sw, _ := newTestSwitcher(t, p)
 
-	change, err := sw.Switch(context.Background(), "backup")
+	change, err := sw.Switch(context.Background(), "backup", model.SwitchPersistent)
 	if err != nil {
 		t.Fatalf("Switch: %v", err)
 	}
@@ -156,7 +156,7 @@ func TestSwitchDetectsProviderFromBareModelName(t *testing.T) {
 	p, _ := twoProviderProfile(t, []string{"gpt-5.6-terra"}, []string{"glm-5.2", "glm-4.9"})
 	sw, _ := newTestSwitcher(t, p)
 
-	change, err := sw.Switch(context.Background(), "glm-4.9")
+	change, err := sw.Switch(context.Background(), "glm-4.9", model.SwitchPersistent)
 	if err != nil {
 		t.Fatalf("Switch: %v", err)
 	}
@@ -170,7 +170,7 @@ func TestSwitchRejectsAmbiguousModel(t *testing.T) {
 	p, _ := twoProviderProfile(t, []string{"gpt-5.6-terra"}, []string{"glm-5.2", "glm-4.9"})
 	sw, _ := newTestSwitcher(t, p)
 
-	_, err := sw.Switch(context.Background(), "glm")
+	_, err := sw.Switch(context.Background(), "glm", model.SwitchPersistent)
 	if err == nil {
 		t.Fatal("an ambiguous model must not resolve silently")
 	}
@@ -184,7 +184,7 @@ func TestSwitchRejectsUnknownModel(t *testing.T) {
 	sw, router := newTestSwitcher(t, p)
 
 	before := router.Name()
-	if _, err := sw.Switch(context.Background(), "no-such-model"); err == nil {
+	if _, err := sw.Switch(context.Background(), "no-such-model", model.SwitchPersistent); err == nil {
 		t.Fatal("an unknown model must fail")
 	}
 	if router.Name() != before {
@@ -201,7 +201,7 @@ func TestSwitchPromotesProviderAndKeepsFallback(t *testing.T) {
 	p, _ := twoProviderProfile(t, []string{"gpt-5.6-terra"}, []string{"glm-5.2"})
 	sw, router := newTestSwitcher(t, p)
 
-	if _, err := sw.Switch(context.Background(), "backup"); err != nil {
+	if _, err := sw.Switch(context.Background(), "backup", model.SwitchPersistent); err != nil {
 		t.Fatalf("Switch: %v", err)
 	}
 	name := router.Name()
@@ -222,7 +222,7 @@ func TestSwitchLeavesTheConfiguredChainIntact(t *testing.T) {
 	base := router.Base()
 	configured := base.Name()
 
-	if _, err := sw.Switch(context.Background(), "primary/gpt-5.5"); err != nil {
+	if _, err := sw.Switch(context.Background(), "primary/gpt-5.5", model.SwitchPersistent); err != nil {
 		t.Fatalf("Switch: %v", err)
 	}
 	if router.Base() != base || base.Name() != configured {
@@ -247,7 +247,7 @@ func TestSwitchPersistsAndIsReappliedOffline(t *testing.T) {
 	p, root := twoProviderProfile(t, []string{"gpt-5.6-terra", "gpt-5.5"}, []string{"glm-5.2"})
 	sw, _ := newTestSwitcher(t, p)
 
-	if _, err := sw.Switch(context.Background(), "primary/gpt-5.5"); err != nil {
+	if _, err := sw.Switch(context.Background(), "primary/gpt-5.5", model.SwitchPersistent); err != nil {
 		t.Fatalf("Switch: %v", err)
 	}
 
@@ -270,8 +270,8 @@ func TestSwitchPersistsAndIsReappliedOffline(t *testing.T) {
 	if !strings.HasPrefix(router2.Name(), "primary/gpt-5.5") {
 		t.Fatalf("restored chain = %q", router2.Name())
 	}
-	if target, overridden := sw2.Current(); target != "primary/gpt-5.5" || !overridden {
-		t.Fatalf("Current = %q overridden=%v", target, overridden)
+	if got := sw2.Current(); got.Target != "primary/gpt-5.5" || !got.Overridden {
+		t.Fatalf("Current = %+v", got)
 	}
 }
 
@@ -368,7 +368,7 @@ func TestScheduledJobsKeepTheConfiguredProviderAfterASwitch(t *testing.T) {
 		t.Fatal("the router must wrap the same chain the job loop calls")
 	}
 
-	if _, err := rt.Switcher.Switch(context.Background(), "backup"); err != nil {
+	if _, err := rt.Switcher.Switch(context.Background(), "backup", model.SwitchPersistent); err != nil {
 		t.Fatalf("Switch: %v", err)
 	}
 
@@ -401,9 +401,8 @@ func TestBuildAppliesStoredOverride(t *testing.T) {
 	}
 	defer rt.Close()
 
-	target, overridden := rt.Switcher.Current()
-	if target != "backup/glm-5.2" || !overridden {
-		t.Fatalf("Current = %q overridden=%v, want the stored override applied", target, overridden)
+	if got := rt.Switcher.Current(); got.Target != "backup/glm-5.2" || !got.Overridden {
+		t.Fatalf("Current = %+v, want the stored override applied", got)
 	}
 }
 
@@ -425,7 +424,7 @@ func TestBuildDropsStaleOverride(t *testing.T) {
 	}
 	defer rt.Close()
 
-	if _, overridden := rt.Switcher.Current(); overridden {
+	if rt.Switcher.Current().Overridden {
 		t.Fatal("a stale override must be dropped, not applied")
 	}
 	stored, _, err := reloaded.ModelOverride()
@@ -476,7 +475,7 @@ func TestSwitchAcceptsModelOnProviderWithoutACatalog(t *testing.T) {
 	}
 	sw, _ := newTestSwitcher(t, p)
 
-	change, err := sw.Switch(context.Background(), "backup/some-private-model")
+	change, err := sw.Switch(context.Background(), "backup/some-private-model", model.SwitchPersistent)
 	if err != nil {
 		t.Fatalf("Switch: %v", err)
 	}
@@ -492,7 +491,111 @@ func TestSwitchRejectsEmptyInput(t *testing.T) {
 	p, _ := twoProviderProfile(t, []string{"gpt-5.6-terra"}, []string{"glm-5.2"})
 	sw, _ := newTestSwitcher(t, p)
 
-	if _, err := sw.Switch(context.Background(), "   "); err == nil {
+	if _, err := sw.Switch(context.Background(), "   ", model.SwitchPersistent); err == nil {
 		t.Fatal("empty input must be rejected")
+	}
+}
+
+// A `once` switch moves the conversation but leaves the stored choice alone,
+// so a restart returns to what was committed rather than to an experiment.
+func TestSwitchOnceDoesNotPersist(t *testing.T) {
+	p, root := twoProviderProfile(t, []string{"gpt-5.6-terra", "gpt-5.5"}, []string{"glm-5.2"})
+	sw, router := newTestSwitcher(t, p)
+
+	change, err := sw.Switch(context.Background(), "primary/gpt-5.5", model.SwitchOnce)
+	if err != nil {
+		t.Fatalf("Switch: %v", err)
+	}
+	if !change.Transient {
+		t.Fatal("a once switch must report itself as transient")
+	}
+	if !strings.HasPrefix(router.Name(), "primary/gpt-5.5") {
+		t.Fatalf("router = %q, want the switch applied in-process", router.Name())
+	}
+	if got := sw.Current(); !got.Transient || !got.Overridden {
+		t.Fatalf("Current = %+v, want a transient override", got)
+	}
+
+	reloaded, err := Load(root, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider, modelID, err := reloaded.ModelOverride()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if provider != "" || modelID != "" {
+		t.Fatalf("stored override = %s/%s, want nothing written", provider, modelID)
+	}
+}
+
+// A once switch on top of a stored one must not erase it: the restart goes
+// back to the stored choice, not to config.
+func TestSwitchOnceLeavesAStoredOverrideIntact(t *testing.T) {
+	p, root := twoProviderProfile(t, []string{"gpt-5.6-terra", "gpt-5.5"}, []string{"glm-5.2"})
+	sw, _ := newTestSwitcher(t, p)
+
+	if _, err := sw.Switch(context.Background(), "backup", model.SwitchPersistent); err != nil {
+		t.Fatalf("persistent switch: %v", err)
+	}
+	if _, err := sw.Switch(context.Background(), "primary/gpt-5.5", model.SwitchOnce); err != nil {
+		t.Fatalf("once switch: %v", err)
+	}
+
+	reloaded, err := Load(root, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider, modelID, err := reloaded.ModelOverride()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if provider != "backup" || modelID != "glm-5.2" {
+		t.Fatalf("stored override = %s/%s, want the earlier persistent choice kept", provider, modelID)
+	}
+}
+
+// Reset clears both the transient and the stored choice.
+func TestResetClearsTransientState(t *testing.T) {
+	p, _ := twoProviderProfile(t, []string{"gpt-5.6-terra", "gpt-5.5"}, []string{"glm-5.2"})
+	sw, _ := newTestSwitcher(t, p)
+
+	if _, err := sw.Switch(context.Background(), "primary/gpt-5.5", model.SwitchOnce); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sw.Reset(); err != nil {
+		t.Fatal(err)
+	}
+	if got := sw.Current(); got.Transient || got.Overridden {
+		t.Fatalf("Current = %+v, want the configured chain back", got)
+	}
+}
+
+// Verification runs against the target alone. A fallback answering for it
+// would report a working model that does not work.
+func TestVerifyFailureLeavesTheTargetUnselected(t *testing.T) {
+	p, _ := twoProviderProfile(t, []string{"gpt-5.6-terra"}, []string{"glm-5.2"})
+	sw, router := newTestSwitcher(t, p)
+	before := router.Name()
+
+	// The stub serves a catalog but no completions, so the tool probe fails.
+	_, err := sw.Verify(context.Background(), "backup/glm-5.2", model.SwitchPersistent)
+	if err == nil {
+		t.Fatal("a model that cannot run the tool exchange must fail verification")
+	}
+	if router.Name() != before {
+		t.Fatalf("router = %q, want the failed target not selected", router.Name())
+	}
+	if router.Overridden() {
+		t.Fatal("a failed verification must not leave an override behind")
+	}
+}
+
+func TestVerifyRejectsUnknownTarget(t *testing.T) {
+	p, _ := twoProviderProfile(t, []string{"gpt-5.6-terra"}, []string{"glm-5.2"})
+	sw, _ := newTestSwitcher(t, p)
+
+	if _, err := sw.Verify(context.Background(), "no-such-model", model.SwitchPersistent); err == nil {
+		t.Fatal("an unresolvable target must fail before any network call")
 	}
 }

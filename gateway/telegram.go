@@ -139,9 +139,8 @@ type TelegramConfig struct {
 // profile, a provider, or a credential — the same reason Agent is an
 // interface. profile.Switcher satisfies it.
 type ModelSwitcher interface {
-	// Current reports the active "provider/model" and whether it overrides
-	// config.toml.
-	Current() (target string, overridden bool)
+	// Current reports the active selection.
+	Current() model.Selection
 
 	// Configured lists the committed chain as "provider/model", primary first.
 	Configured() []string
@@ -151,7 +150,11 @@ type ModelSwitcher interface {
 	Options(ctx context.Context) ([]model.ProviderModels, error)
 
 	// Switch resolves free-form input and redirects interactive turns.
-	Switch(ctx context.Context, input string) (model.SwitchChange, error)
+	Switch(ctx context.Context, input string, scope model.SwitchScope) (model.SwitchChange, error)
+
+	// Verify runs a live protocol check. An empty input checks the running
+	// target; a named one is switched to only if it passes.
+	Verify(ctx context.Context, input string, scope model.SwitchScope) (model.VerifyResult, error)
 
 	// Reset restores the configured chain, returning the resulting target.
 	Reset() (target string, err error)

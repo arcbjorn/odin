@@ -76,7 +76,7 @@ func usage() {
   odin auth    --profile NAME --provider NAME [--account NAME]
   odin usage   --profile NAME [--provider NAME]
   odin models  --profile NAME [--provider NAME]
-  odin model   --profile NAME [get|set TARGET|reset]
+X
   odin verify  --profile NAME --provider NAME
   odin validate --profile NAME
   odin timezone --profile NAME [get|set ZONE|reset]

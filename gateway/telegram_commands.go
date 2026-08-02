@@ -124,7 +124,13 @@ func (t *Telegram) handleModel(ctx context.Context, args string) string {
 	if t.switcher == nil {
 		return t.modelReport()
 	}
-	switch strings.ToLower(args) {
+	// A leading sub-command decides the scope; everything after it is the
+	// target, so "once" and "verify" compose with any accepted target form.
+	verb, rest, _ := strings.Cut(args, " ")
+	rest = strings.TrimSpace(rest)
+	scope := model.SwitchPersistent
+
+	switch strings.ToLower(verb) {
 	case "":
 		return t.modelReport()
 	case "list", "ls":
@@ -139,9 +145,20 @@ func (t *Telegram) handleModel(ctx context.Context, args string) string {
 			return "Restored " + code(target) + ", but: " + err.Error()
 		}
 		return "Restored the configured chain.\n**Model:** " + code(target)
+	case "verify", "check":
+		return t.modelVerify(ctx, rest, scope)
+	case "once":
+		if rest == "" {
+			return "`/model once NAME` needs a target."
+		}
+		args, scope = rest, model.SwitchOnce
+		if strings.EqualFold(strings.Fields(rest)[0], "verify") {
+			_, target, _ := strings.Cut(rest, " ")
+			return t.modelVerify(ctx, strings.TrimSpace(target), scope)
+		}
 	}
 
-	change, err := t.switcher.Switch(ctx, args)
+	change, err := t.switcher.Switch(ctx, args, scope)
 	if err != nil {
 		return "Cannot switch: " + err.Error()
 	}
@@ -159,10 +176,42 @@ func (t *Telegram) handleModel(ctx context.Context, args string) string {
 	if change.ProviderChanged {
 		b.WriteString("\nProvider changed — the rest of the chain stays as fallback.")
 	}
+	if change.Transient {
+		b.WriteString("\nThis process only — a restart returns to the stored choice.")
+	}
 	if change.Warning != "" {
 		b.WriteString("\n⚠️ " + change.Warning)
 	}
 	b.WriteString("\n\nThis applies to chat only; scheduled jobs keep the configured model.")
+	return b.String()
+}
+
+// modelVerify reports a live protocol check. Naming a target switches to it
+// only once it passes, so a model that cannot hold up the tool exchange never
+// becomes the one answering.
+func (t *Telegram) modelVerify(ctx context.Context, target string, scope model.SwitchScope) string {
+	result, err := t.switcher.Verify(ctx, target, scope)
+	if err != nil {
+		if result.Target != "" {
+			return "❌ " + code(result.Target) + " failed verification: " + err.Error()
+		}
+		return "Cannot verify: " + err.Error()
+	}
+
+	var b strings.Builder
+	b.WriteString("✅ " + code(result.Target) + "\n")
+	if result.CatalogChecked {
+		b.WriteString("· catalog ok\n")
+	} else {
+		b.WriteString("· catalog not offered by this endpoint\n")
+	}
+	b.WriteString("· tool call ok\n· continuation ok")
+	if result.Switched {
+		b.WriteString("\n\nSwitched.")
+		if scope == model.SwitchOnce {
+			b.WriteString(" This process only.")
+		}
+	}
 	return b.String()
 }
 
@@ -171,14 +220,18 @@ func (t *Telegram) modelReport() string {
 	if t.switcher == nil {
 		return t.staticModelReport()
 	}
-	target, overridden := t.switcher.Current()
+	selection := t.switcher.Current()
+	target := selection.Target
 	if target == "" {
 		return "No model configured."
 	}
 
 	var b strings.Builder
 	b.WriteString("**Model:** " + code(target))
-	if overridden {
+	switch {
+	case selection.Overridden && selection.Transient:
+		b.WriteString("  (override, this process only)")
+	case selection.Overridden:
 		b.WriteString("  (override)")
 	}
 
@@ -199,10 +252,11 @@ func (t *Telegram) modelReport() string {
 	} else {
 		b.WriteString("\n(no fallback)")
 	}
-	if overridden && len(configured) > 0 {
+	if selection.Overridden && len(configured) > 0 {
 		b.WriteString("\n**config.toml:** " + code(configured[0]))
 	}
-	b.WriteString("\n\n`/model NAME` switch · `/model list` catalog · `/model reset` restore")
+	b.WriteString("\n\n`/model NAME` switch · `/model list` catalog · `/model reset` restore" +
+		"\n`/model once NAME` this process only · `/model verify [NAME]` live check")
 	return b.String()
 }
 
@@ -224,7 +278,7 @@ func (t *Telegram) modelOptions(options []model.ProviderModels) string {
 	if len(options) == 0 {
 		return "No providers configured."
 	}
-	target, _ := t.switcher.Current()
+	target := t.switcher.Current().Target
 
 	var b strings.Builder
 	for i, option := range options {

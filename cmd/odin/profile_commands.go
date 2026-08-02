@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/arcbjorn/odin/model"
 	"github.com/arcbjorn/odin/profile"
 )
 
@@ -59,27 +60,31 @@ func cmdModel(args []string) error {
 	switch action {
 	case "get":
 		if len(positionals) > 1 {
-			return errors.New("usage: odin model [get|set TARGET|reset]")
+			return errors.New("usage: odin model [get|set TARGET|once TARGET|verify [TARGET]|reset]")
 		}
-		target, overridden := rt.Switcher.Current()
+		selection := rt.Switcher.Current()
 		source := "config"
-		if overridden {
+		if selection.Overridden {
 			source = "runtime override"
 		}
-		fmt.Printf("%s (%s)\n", target, source)
+		fmt.Printf("%s (%s)\n", selection.Target, source)
 		for _, entry := range rt.Switcher.Configured() {
 			fmt.Printf("configured  %s\n", entry)
 		}
 		return nil
 
-	case "set":
+	case "set", "once":
 		if len(positionals) != 2 {
-			return errors.New("model set requires a target, e.g. openai/gpt-5.6-terra")
+			return fmt.Errorf("model %s requires a target, e.g. openai/gpt-5.6-terra", action)
 		}
 		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 		defer stop()
 
-		change, err := rt.Switcher.Switch(ctx, positionals[1])
+		scope := model.SwitchPersistent
+		if action == "once" {
+			scope = model.SwitchOnce
+		}
+		change, err := rt.Switcher.Switch(ctx, positionals[1], scope)
 		if err != nil {
 			return err
 		}
@@ -89,9 +94,47 @@ func cmdModel(args []string) error {
 		if change.Warning != "" {
 			fmt.Printf("warning   %s\n", change.Warning)
 		}
+		if change.Transient {
+			// Nothing was written, so there is nothing for a restart to read.
+			// Saying so avoids a switch that looks applied but is not.
+			fmt.Println("\nNot stored: `once` affects only the process that ran it,")
+			fmt.Println("so a running agent keeps whatever it already had.")
+			return nil
+		}
 		// A running agent reads this at startup, like the timezone override.
 		fmt.Println("\nApplies to chat turns only; scheduled jobs keep the configured model.")
 		fmt.Println("Restart Odin for a running agent to pick this up.")
+		return nil
+
+	case "verify":
+		if len(positionals) > 2 {
+			return errors.New("usage: odin model verify [TARGET]")
+		}
+		target := ""
+		if len(positionals) == 2 {
+			target = positionals[1]
+		}
+		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+		defer stop()
+
+		result, err := rt.Switcher.Verify(ctx, target, model.SwitchPersistent)
+		if err != nil {
+			if result.Target != "" {
+				return fmt.Errorf("verify %s: %w", result.Target, err)
+			}
+			return err
+		}
+		fmt.Printf("model         %s\n", result.Target)
+		if result.CatalogChecked {
+			fmt.Println("catalog       ok")
+		} else {
+			fmt.Println("catalog       unsupported")
+		}
+		fmt.Println("tool call     ok")
+		fmt.Println("continuation  ok")
+		if result.Switched {
+			fmt.Println("\nSwitched; restart Odin for a running agent to pick this up.")
+		}
 		return nil
 
 	case "reset":
@@ -106,7 +149,7 @@ func cmdModel(args []string) error {
 		return nil
 
 	default:
-		return fmt.Errorf("unknown model action %q (want get, set, or reset)", action)
+		return fmt.Errorf("unknown model action %q (want get, set, once, verify, or reset)", action)
 	}
 }
 

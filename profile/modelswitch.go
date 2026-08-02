@@ -55,8 +55,11 @@ type Switcher struct {
 	// at construction and never replaced, so it needs no lock.
 	catalogs map[string]model.Provider
 
-	mu      sync.Mutex
-	current ModelTarget
+	mu sync.Mutex
+	// current is the active target; transient marks it as SwitchOnce, which
+	// deliberately left the stored choice untouched.
+	current   ModelTarget
+	transient bool
 }
 
 // NewSwitcher wires a router to the profile that produced it. The token
@@ -96,10 +99,16 @@ func (s *Switcher) Target() ModelTarget {
 	return s.current
 }
 
-// Current reports the active "provider/model" and whether it overrides
-// config.toml. It satisfies the gateway's switcher contract.
-func (s *Switcher) Current() (string, bool) {
-	return s.Target().String(), s.router.Overridden()
+// Current reports the active selection. It satisfies the gateway's contract.
+func (s *Switcher) Current() model.Selection {
+	s.mu.Lock()
+	target, transient := s.current, s.transient
+	s.mu.Unlock()
+	return model.Selection{
+		Target:     target.String(),
+		Overridden: s.router.Overridden(),
+		Transient:  transient,
+	}
 }
 
 // Configured lists the committed chain as "provider/model", primary first.
@@ -144,7 +153,7 @@ func (s *Switcher) Options(ctx context.Context) ([]model.ProviderModels, error) 
 //	                 validated never to, so this is unambiguous)
 //	provider         that provider at its configured model
 //	model            detected across configured providers' catalogs
-func (s *Switcher) Switch(ctx context.Context, input string) (model.SwitchChange, error) {
+func (s *Switcher) Switch(ctx context.Context, input string, scope model.SwitchScope) (model.SwitchChange, error) {
 	input = strings.TrimSpace(input)
 	if input == "" {
 		return model.SwitchChange{}, errors.New("a model is required")
@@ -154,7 +163,11 @@ func (s *Switcher) Switch(ctx context.Context, input string) (model.SwitchChange
 	if err != nil {
 		return model.SwitchChange{}, err
 	}
+	return s.apply(target, via, scope)
+}
 
+// apply moves the router onto an already resolved target.
+func (s *Switcher) apply(target ModelTarget, via string, scope model.SwitchScope) (model.SwitchChange, error) {
 	previous := s.Target()
 	provider, err := s.buildSwitched(target)
 	if err != nil {
@@ -164,6 +177,7 @@ func (s *Switcher) Switch(ctx context.Context, input string) (model.SwitchChange
 	s.router.Switch(provider)
 	s.mu.Lock()
 	s.current = target
+	s.transient = scope == model.SwitchOnce
 	s.mu.Unlock()
 
 	change := model.SwitchChange{
@@ -171,6 +185,12 @@ func (s *Switcher) Switch(ctx context.Context, input string) (model.SwitchChange
 		Previous:        previous.String(),
 		ProviderChanged: target.Provider != previous.Provider,
 		ResolvedVia:     via,
+		Transient:       scope == model.SwitchOnce,
+	}
+	if scope == model.SwitchOnce {
+		// Deliberately leaves the stored choice alone: a restart returns to
+		// whatever was committed, which is the whole point of asking for one.
+		return change, nil
 	}
 
 	// Persist after the swap, not before: the user asked for this turn to use
@@ -195,12 +215,71 @@ func (s *Switcher) Reset() (string, error) {
 	}
 	s.mu.Lock()
 	s.current = target
+	s.transient = false
 	s.mu.Unlock()
 
 	if err := s.profile.SetModelOverride("", ""); err != nil {
 		return target.String(), fmt.Errorf("clear stored override: %w", err)
 	}
 	return target.String(), nil
+}
+
+// Verify runs a live protocol check — catalog, tool call, and the post-tool
+// continuation — against a target.
+//
+// An empty input checks whatever is running now. Naming a target checks that
+// one and moves onto it only if it passes, so a model that cannot hold up the
+// tool exchange is found here rather than halfway through a real turn.
+//
+// The check runs against the target alone, never the chain: a fallback
+// answering for it would report success for a model that does not work.
+func (s *Switcher) Verify(ctx context.Context, input string, scope model.SwitchScope) (model.VerifyResult, error) {
+	input = strings.TrimSpace(input)
+
+	target := s.Target()
+	via := ""
+	switching := input != ""
+	if switching {
+		resolved, resolvedVia, err := s.resolve(ctx, input)
+		if err != nil {
+			return model.VerifyResult{}, err
+		}
+		target, via = resolved, resolvedVia
+	}
+
+	pinned, err := s.pinned(target)
+	if err != nil {
+		return model.VerifyResult{}, err
+	}
+	verification, err := model.VerifyProvider(ctx, pinned)
+	if err != nil {
+		return model.VerifyResult{Target: target.String()}, err
+	}
+
+	result := model.VerifyResult{
+		Target:         target.String(),
+		CatalogChecked: verification.CatalogChecked,
+		ToolCall:       verification.ToolCall,
+		Continuation:   verification.Continuation,
+	}
+	if !switching {
+		return result, nil
+	}
+	if _, err := s.apply(target, via, scope); err != nil {
+		return result, err
+	}
+	result.Switched = true
+	return result, nil
+}
+
+// pinned builds the target on its own, with no fallback behind it.
+func (s *Switcher) pinned(target ModelTarget) (model.Provider, error) {
+	pc, ok := s.configured(target.Provider)
+	if !ok {
+		return nil, fmt.Errorf("provider %q is not configured", target.Provider)
+	}
+	pc.Model = target.Model
+	return buildTransport(pc, s.tokens[pc.Name], s.log)
 }
 
 // applyStored re-applies a persisted override at startup.
@@ -225,6 +304,7 @@ func (s *Switcher) applyStored(providerName, modelID string) error {
 	s.router.Switch(provider)
 	s.mu.Lock()
 	s.current = target
+	s.transient = false
 	s.mu.Unlock()
 	return nil
 }

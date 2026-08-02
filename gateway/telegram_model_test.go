@@ -16,19 +16,24 @@ type fakeSwitcher struct {
 	mu         sync.Mutex
 	target     string
 	overridden bool
+	transient  bool
 	configured []string
 	options    []model.ProviderModels
 	optionsErr error
 	switchErr  error
 	resetErr   error
+	verifyErr  error
+	verifyRes  model.VerifyResult
 	switched   []string
+	scopes     []model.SwitchScope
+	verified   []string
 	resets     int
 }
 
-func (f *fakeSwitcher) Current() (string, bool) {
+func (f *fakeSwitcher) Current() model.Selection {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.target, f.overridden
+	return model.Selection{Target: f.target, Overridden: f.overridden, Transient: f.transient}
 }
 
 func (f *fakeSwitcher) Configured() []string { return f.configured }
@@ -37,22 +42,45 @@ func (f *fakeSwitcher) Options(context.Context) ([]model.ProviderModels, error) 
 	return f.options, f.optionsErr
 }
 
-func (f *fakeSwitcher) Switch(_ context.Context, input string) (model.SwitchChange, error) {
+func (f *fakeSwitcher) Switch(_ context.Context, input string, scope model.SwitchScope) (model.SwitchChange, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.switched = append(f.switched, input)
+	f.scopes = append(f.scopes, scope)
 	if f.switchErr != nil {
 		return model.SwitchChange{}, f.switchErr
 	}
 	previous := f.target
 	f.target = input
 	f.overridden = true
+	f.transient = scope == model.SwitchOnce
 	return model.SwitchChange{
 		Target:          input,
 		Previous:        previous,
 		ProviderChanged: !strings.HasPrefix(input, strings.SplitN(previous, "/", 2)[0]+"/"),
 		ResolvedVia:     "catalog",
+		Transient:       scope == model.SwitchOnce,
 	}, nil
+}
+
+func (f *fakeSwitcher) Verify(_ context.Context, input string, scope model.SwitchScope) (model.VerifyResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.verified = append(f.verified, input)
+	f.scopes = append(f.scopes, scope)
+	if f.verifyErr != nil {
+		return f.verifyRes, f.verifyErr
+	}
+	res := f.verifyRes
+	if res.Target == "" {
+		res.Target = f.target
+	}
+	if input != "" {
+		res.Switched = true
+		f.target = input
+		f.overridden = true
+	}
+	return res, nil
 }
 
 func (f *fakeSwitcher) Reset() (string, error) {
@@ -64,6 +92,7 @@ func (f *fakeSwitcher) Reset() (string, error) {
 	}
 	f.target = f.configured[0]
 	f.overridden = false
+	f.transient = false
 	return f.target, nil
 }
 
@@ -254,9 +283,118 @@ func TestModelSwitchSurfacesWarning(t *testing.T) {
 
 type warningSwitcher struct{ fakeSwitcher }
 
-func (w *warningSwitcher) Switch(context.Context, string) (model.SwitchChange, error) {
+func (w *warningSwitcher) Switch(context.Context, string, model.SwitchScope) (model.SwitchChange, error) {
 	return model.SwitchChange{
 		Target:  "backup/glm-5.2",
 		Warning: "active for this process only — could not persist: read-only file system",
 	}, nil
+}
+
+// `/model once` applies without persisting — the exploratory switch Hermes
+// makes its default and Odin makes explicit.
+func TestModelOnceSwitchesWithoutPersisting(t *testing.T) {
+	g, fake, sw, _ := switcherGateway(t)
+
+	g.respond(context.Background(), 1, "/model once backup/glm-5.2")
+
+	if len(sw.switched) != 1 || sw.switched[0] != "backup/glm-5.2" {
+		t.Fatalf("switcher received %v, want the target without the verb", sw.switched)
+	}
+	if len(sw.scopes) != 1 || sw.scopes[0] != model.SwitchOnce {
+		t.Fatalf("scopes = %v, want SwitchOnce", sw.scopes)
+	}
+	if last := lastMessage(t, fake); !strings.Contains(last, "process only") {
+		t.Fatalf("confirmation should state the switch is not stored: %q", last)
+	}
+}
+
+func TestModelOnceWithoutTargetExplainsItself(t *testing.T) {
+	g, fake, sw, _ := switcherGateway(t)
+
+	g.respond(context.Background(), 1, "/model once")
+
+	if len(sw.switched) != 0 {
+		t.Fatalf("nothing should have been switched: %v", sw.switched)
+	}
+	if last := lastMessage(t, fake); !strings.Contains(last, "needs a target") {
+		t.Fatalf("expected usage help, got: %q", last)
+	}
+}
+
+// A transient override has to be visibly transient, or the next restart looks
+// like the model silently changed itself.
+func TestModelReportMarksTransientOverride(t *testing.T) {
+	g, fake, sw, _ := switcherGateway(t)
+	sw.target, sw.overridden, sw.transient = "backup/glm-5.2", true, true
+
+	g.respond(context.Background(), 1, "/model")
+
+	if last := lastMessage(t, fake); !strings.Contains(last, "process only") {
+		t.Fatalf("report should mark a transient override: %q", last)
+	}
+}
+
+func TestModelVerifyChecksRunningTarget(t *testing.T) {
+	g, fake, sw, _ := switcherGateway(t)
+	sw.verifyRes = model.VerifyResult{Target: "primary/gpt-5.6-terra", CatalogChecked: true}
+
+	g.respond(context.Background(), 1, "/model verify")
+
+	if len(sw.verified) != 1 || sw.verified[0] != "" {
+		t.Fatalf("verified %v, want the running target", sw.verified)
+	}
+	last := lastMessage(t, fake)
+	for _, want := range []string{"primary/gpt-5.6-terra", "catalog ok", "tool call ok", "continuation ok"} {
+		if !strings.Contains(last, want) {
+			t.Fatalf("verify report missing %q: %q", want, last)
+		}
+	}
+	if strings.Contains(last, "Switched") {
+		t.Fatalf("verifying the running target must not report a switch: %q", last)
+	}
+}
+
+// The point of the command: a target that cannot hold up the tool exchange is
+// caught here rather than mid-turn, and is not switched to.
+func TestModelVerifyFailureDoesNotSwitch(t *testing.T) {
+	g, fake, sw, _ := switcherGateway(t)
+	sw.verifyErr = errors.New("tool call: model returned no tool_calls")
+	sw.verifyRes = model.VerifyResult{Target: "backup/glm-5.2"}
+
+	g.respond(context.Background(), 1, "/model verify backup/glm-5.2")
+
+	last := lastMessage(t, fake)
+	if !strings.Contains(last, "failed verification") || !strings.Contains(last, "no tool_calls") {
+		t.Fatalf("failure should be reported with its reason: %q", last)
+	}
+	if sw.overridden {
+		t.Fatal("a target that failed verification must not become active")
+	}
+}
+
+func TestModelVerifySwitchesOnSuccess(t *testing.T) {
+	g, fake, sw, _ := switcherGateway(t)
+
+	g.respond(context.Background(), 1, "/model verify backup/glm-5.2")
+
+	if len(sw.verified) != 1 || sw.verified[0] != "backup/glm-5.2" {
+		t.Fatalf("verified %v", sw.verified)
+	}
+	if last := lastMessage(t, fake); !strings.Contains(last, "Switched") {
+		t.Fatalf("a passing check should switch and say so: %q", last)
+	}
+}
+
+// The two modifiers compose: check it, use it, but do not store it.
+func TestModelOnceVerifyComposes(t *testing.T) {
+	g, _, sw, _ := switcherGateway(t)
+
+	g.respond(context.Background(), 1, "/model once verify backup/glm-5.2")
+
+	if len(sw.verified) != 1 || sw.verified[0] != "backup/glm-5.2" {
+		t.Fatalf("verified %v, want the target with both verbs stripped", sw.verified)
+	}
+	if len(sw.scopes) != 1 || sw.scopes[0] != model.SwitchOnce {
+		t.Fatalf("scopes = %v, want SwitchOnce", sw.scopes)
+	}
 }
