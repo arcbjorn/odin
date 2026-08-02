@@ -7,6 +7,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/arcbjorn/odin/model"
 )
 
 // syncCommands registers the command menu, but only when it differs from what
@@ -105,9 +107,107 @@ func (t *Telegram) trackSent(chatID int64, result json.RawMessage) {
 	}
 }
 
-// modelReport describes the configured provider chain for /model: which model
-// runs and what it falls back to.
+// maxListedModels bounds how much of one provider's catalog /model list
+// prints. A full catalog can run past a hundred entries and turn a chat
+// command into several screens; any model can still be selected by name
+// whether or not it was listed.
+const maxListedModels = 30
+
+// handleModel implements /model. Bare shows the active target, "list" prints
+// the live catalogs, "reset" restores config.toml, and anything else is a
+// switch target.
+//
+// Deliberately message-driven rather than an inline keyboard: this gateway
+// polls for messages only, and adding callback queries would widen the
+// transport surface for a command that reads fine as text.
+func (t *Telegram) handleModel(ctx context.Context, args string) string {
+	if t.switcher == nil {
+		return t.modelReport()
+	}
+	switch strings.ToLower(args) {
+	case "":
+		return t.modelReport()
+	case "list", "ls":
+		options, err := t.switcher.Options(ctx)
+		if err != nil {
+			return "Could not list models: " + err.Error()
+		}
+		return t.modelOptions(options)
+	case "reset", "default":
+		target, err := t.switcher.Reset()
+		if err != nil {
+			return "Restored " + code(target) + ", but: " + err.Error()
+		}
+		return "Restored the configured chain.\n**Model:** " + code(target)
+	}
+
+	change, err := t.switcher.Switch(ctx, args)
+	if err != nil {
+		return "Cannot switch: " + err.Error()
+	}
+	t.log.Info("model switched",
+		"target", change.Target, "previous", change.Previous, "resolved_via", change.ResolvedVia)
+
+	var b strings.Builder
+	b.WriteString("**Model:** " + code(change.Target))
+	if change.ResolvedVia != "" && change.ResolvedVia != "catalog" {
+		b.WriteString("  (" + change.ResolvedVia + ")")
+	}
+	if change.Previous != "" && change.Previous != change.Target {
+		b.WriteString("\nWas: " + code(change.Previous))
+	}
+	if change.ProviderChanged {
+		b.WriteString("\nProvider changed — the rest of the chain stays as fallback.")
+	}
+	if change.Warning != "" {
+		b.WriteString("\n⚠️ " + change.Warning)
+	}
+	b.WriteString("\n\nThis applies to chat only; scheduled jobs keep the configured model.")
+	return b.String()
+}
+
+// modelReport describes what runs now and what it falls back to.
 func (t *Telegram) modelReport() string {
+	if t.switcher == nil {
+		return t.staticModelReport()
+	}
+	target, overridden := t.switcher.Current()
+	if target == "" {
+		return "No model configured."
+	}
+
+	var b strings.Builder
+	b.WriteString("**Model:** " + code(target))
+	if overridden {
+		b.WriteString("  (override)")
+	}
+
+	// The active provider is promoted to primary on a switch, so the fallback
+	// order is the rest of the configured chain in its committed order.
+	activeProvider, _, _ := strings.Cut(target, "/")
+	configured := t.switcher.Configured()
+	fallback := make([]string, 0, len(configured))
+	for _, entry := range configured {
+		if name, _, _ := strings.Cut(entry, "/"); name == activeProvider {
+			continue
+		}
+		fallback = append(fallback, entry)
+	}
+	if len(fallback) > 0 {
+		b.WriteString("\n**Fallback:** " + strings.Join(fallback, " → "))
+		b.WriteString("\n(restarts from the primary each turn; falls back on error)")
+	} else {
+		b.WriteString("\n(no fallback)")
+	}
+	if overridden && len(configured) > 0 {
+		b.WriteString("\n**config.toml:** " + code(configured[0]))
+	}
+	b.WriteString("\n\n`/model NAME` switch · `/model list` catalog · `/model reset` restore")
+	return b.String()
+}
+
+// staticModelReport is the read-only view used when no switcher is wired.
+func (t *Telegram) staticModelReport() string {
 	if len(t.modelChain) == 0 {
 		return "No model configured."
 	}
@@ -117,6 +217,56 @@ func (t *Telegram) modelReport() string {
 	return "Model: " + t.modelChain[0] +
 		"\nFallback: " + strings.Join(t.modelChain[1:], " → ") +
 		"\n(restarts from the primary each turn; falls back on error)"
+}
+
+// modelOptions renders the per-provider catalogs, marking the active model.
+func (t *Telegram) modelOptions(options []model.ProviderModels) string {
+	if len(options) == 0 {
+		return "No providers configured."
+	}
+	target, _ := t.switcher.Current()
+
+	var b strings.Builder
+	for i, option := range options {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString("**" + option.Provider + "**\n")
+		if option.Err != "" {
+			// Still switchable at its configured model, so say so rather than
+			// leaving the provider looking unusable.
+			b.WriteString("· " + code(option.Provider+"/"+option.Configured) + " (configured)\n")
+			b.WriteString("_" + option.Err + "_\n")
+			continue
+		}
+		listed := option.Models
+		if len(listed) > maxListedModels {
+			listed = listed[:maxListedModels]
+		}
+		for _, id := range listed {
+			line := "· " + code(id)
+			if option.Provider+"/"+id == target {
+				line += " ← active"
+			} else if id == option.Configured {
+				line += " (configured)"
+			}
+			b.WriteString(line + "\n")
+		}
+		if rest := len(option.Models) - len(listed); rest > 0 {
+			b.WriteString(fmt.Sprintf("_…%d more; `odin models` lists them all_\n", rest))
+		}
+	}
+	b.WriteString("\n`/model NAME` to switch — any catalog model works, listed or not.")
+	return b.String()
+}
+
+// code wraps a value in backticks so Telegram renders it monospace and
+// tap-to-copy, which is how a model id gets reused in the next command.
+func code(s string) string {
+	if s == "" {
+		return "(none)"
+	}
+	return "`" + s + "`"
 }
 
 func (t *Telegram) session(chatID int64) *session {

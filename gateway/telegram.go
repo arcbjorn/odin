@@ -50,8 +50,12 @@ type Telegram struct {
 	sessionTTL time.Duration
 
 	// modelChain is the configured provider chain ("name/model" each), primary
-	// first. Static — reported by /model, never mutated.
+	// first. Static — the fallback when no switcher is wired.
 	modelChain []string
+
+	// switcher applies /model changes. Nil leaves /model a read-only report,
+	// which is what a gateway built without a runtime gets.
+	switcher ModelSwitcher
 
 	mu       sync.Mutex
 	sessions map[int64]*session
@@ -116,6 +120,34 @@ type TelegramConfig struct {
 	// ModelChain is the configured provider chain, "name/model" each, primary
 	// first. Reported by the /model command.
 	ModelChain []string
+
+	// Switcher lets /model change the model for interactive turns. Optional:
+	// without it /model still reports, it just cannot switch.
+	Switcher ModelSwitcher
+}
+
+// ModelSwitcher is the gateway's view of the runtime's model selection.
+//
+// Declared here rather than imported so the gateway stays testable without a
+// profile, a provider, or a credential — the same reason Agent is an
+// interface. profile.Switcher satisfies it.
+type ModelSwitcher interface {
+	// Current reports the active "provider/model" and whether it overrides
+	// config.toml.
+	Current() (target string, overridden bool)
+
+	// Configured lists the committed chain as "provider/model", primary first.
+	Configured() []string
+
+	// Options lists switchable models per provider, live where the endpoint
+	// offers a catalog.
+	Options(ctx context.Context) ([]model.ProviderModels, error)
+
+	// Switch resolves free-form input and redirects interactive turns.
+	Switch(ctx context.Context, input string) (model.SwitchChange, error)
+
+	// Reset restores the configured chain, returning the resulting target.
+	Reset() (target string, err error)
 }
 
 // NewTelegram builds the gateway.
@@ -151,6 +183,7 @@ func NewTelegram(cfg TelegramConfig) (*Telegram, error) {
 		baseURL:    telegramAPI,
 		sessionTTL: ttl,
 		modelChain: cfg.ModelChain,
+		switcher:   cfg.Switcher,
 		sessions:   make(map[int64]*session),
 		deletable:  make(map[int64][]int64),
 		// Slightly longer than the poll timeout so the request itself does not
@@ -186,7 +219,7 @@ type apiResponse struct {
 // the commands are compiled in — so it only changes across deploys.
 var botCommands = []botCommand{
 	{Command: "new", Description: "Clear the chat and start fresh"},
-	{Command: "model", Description: "Show the running model and fallbacks"},
+	{Command: "model", Description: "Show or switch the model (list, reset)"},
 }
 
 // maxTrackedMessages bounds the per-chat list of message IDs /new may delete,
@@ -313,7 +346,8 @@ func (t *Telegram) respond(ctx context.Context, chatID int64, text string) {
 	t.sendChatAction(ctx, chatID, "typing")
 
 	if cmd := strings.TrimSpace(text); strings.HasPrefix(cmd, "/") {
-		switch strings.Fields(cmd)[0] {
+		name, args, _ := strings.Cut(cmd, " ")
+		switch name {
 		// /new is the single "clear the chat" command; /start is what Telegram
 		// sends when a chat is first opened. Both delete the tracked messages
 		// and reset the conversation.
@@ -322,7 +356,7 @@ func (t *Telegram) respond(ctx context.Context, chatID int64, text string) {
 			t.send(ctx, chatID, "Cleared.")
 			return
 		case "/model":
-			t.send(ctx, chatID, t.modelReport())
+			t.send(ctx, chatID, t.handleModel(ctx, strings.TrimSpace(args)))
 			return
 		}
 		// Any other slash command falls through to the agent as ordinary input.
