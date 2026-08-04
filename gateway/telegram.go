@@ -45,6 +45,11 @@ type Telegram struct {
 	// baseURL is the API root, overridden in tests to point at a stub.
 	baseURL string
 
+	// typingEvery is how often the typing indicator is re-asserted while a turn
+	// runs. Overridden in tests so a case does not have to sleep for seconds to
+	// observe a refresh.
+	typingEvery time.Duration
+
 	// sessionTTL resets a conversation after inactivity, so a stale morning
 	// context is not still in the prompt at midnight.
 	sessionTTL time.Duration
@@ -201,6 +206,7 @@ func NewTelegram(cfg TelegramConfig) (*Telegram, error) {
 		agent:       cfg.Agent,
 		log:         cfg.Logger,
 		baseURL:     telegramAPI,
+		typingEvery: typingRefresh,
 		sessionTTL:  ttl,
 		modelChain:  cfg.ModelChain,
 		switcher:    cfg.Switcher,
@@ -363,15 +369,18 @@ func (t *Telegram) handle(ctx context.Context, u update) {
 }
 
 func (t *Telegram) respond(ctx context.Context, chatID int64, text string) {
+	// Held for the whole handler, the wait for the session lock included: a
+	// follow-up sent mid-turn is queued rather than dropped, and the indicator
+	// is the only sign the user gets that it was received at all.
+	stopTyping := t.holdTyping(ctx, chatID)
+	defer stopTyping()
+
 	sess := t.session(chatID)
 
 	// One turn at a time per chat. Rapid follow-ups queue rather than
 	// interleaving into a corrupted history.
 	sess.busy.Lock()
 	defer sess.busy.Unlock()
-
-	// Long turns should still show that the bot is working.
-	t.sendChatAction(ctx, chatID, "typing")
 
 	if cmd := strings.TrimSpace(text); strings.HasPrefix(cmd, "/") {
 		name, args, _ := strings.Cut(cmd, " ")

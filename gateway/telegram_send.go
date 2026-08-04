@@ -88,6 +88,55 @@ func (t *Telegram) sendChatAction(ctx context.Context, chatID int64, action stri
 	}
 }
 
+// typingRefresh re-asserts the typing indicator before Telegram drops it.
+//
+// A chat action expires after about five seconds. One action at the start of a
+// turn therefore covers only its first moments: a turn that queries the
+// database, reads a skill, and then waits on the model runs for tens of
+// seconds, and for almost all of that the bot looked idle.
+const typingRefresh = 4 * time.Second
+
+// holdTyping shows "typing…" until the returned stop function is called.
+//
+// The refresh runs in its own goroutine so the turn never waits on a chat
+// action; the indicator is cosmetic and must not add real latency to the reply.
+// Each action is sent only after the previous one returns, so a slow or hanging
+// Telegram cannot pile up requests behind the ticker.
+//
+// stop cancels and then waits, so no action can land after the reply and leave
+// the bot looking like it is still working on something it already answered.
+func (t *Telegram) holdTyping(ctx context.Context, chatID int64) (stop func()) {
+	ctx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+
+	every := t.typingEvery
+	if every <= 0 {
+		every = typingRefresh
+	}
+
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(every)
+		defer ticker.Stop()
+		for {
+			if ctx.Err() != nil {
+				return
+			}
+			t.sendChatAction(ctx, chatID, "typing")
+			select {
+			case <-ticker.C:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	return func() {
+		cancel()
+		<-done
+	}
+}
+
 // Notify pushes an unsolicited message — how scheduled jobs reach the user.
 //
 // A failure is both queued and returned. Queued, because nobody is waiting on

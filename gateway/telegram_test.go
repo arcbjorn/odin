@@ -60,6 +60,7 @@ type fakeTelegram struct {
 	nextMsgID   int64   // monotonic id handed back by sendMessage
 	setCommands int     // times setMyCommands was called
 	getResult   string  // what getMyCommands returns (default: empty set)
+	chatActions int     // times sendChatAction was called
 
 	// failSends makes send methods return an API error, standing in for a
 	// Telegram outage. sendsBeforeFail lets the first N succeed, which is how
@@ -148,11 +149,21 @@ func (f *fakeTelegram) server(t *testing.T) *httptest.Server {
 			f.mu.Lock()
 			f.setCommands++
 			f.mu.Unlock()
+		case strings.HasSuffix(r.URL.Path, "/sendChatAction"):
+			f.mu.Lock()
+			f.chatActions++
+			f.mu.Unlock()
 		}
 		io.WriteString(w, `{"ok":true,"result":[]}`)
 	}))
 	t.Cleanup(srv.Close)
 	return srv
+}
+
+func (f *fakeTelegram) chatActionCalls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.chatActions
 }
 
 func (f *fakeTelegram) setCommandCalls() int {
@@ -284,6 +295,40 @@ func TestAuthorizedUserGetsReply(t *testing.T) {
 	// Replies ship as raw markdown via sendRichMessage — no escaping.
 	if msgs[len(msgs)-1] != "Task saved." {
 		t.Fatalf("got %q", msgs[len(msgs)-1])
+	}
+}
+
+// Telegram drops the typing status after about five seconds, so a turn that
+// takes longer than that has to keep re-asserting it. Sending the action once
+// at the start left the bot looking idle for most of every real turn.
+func TestTypingIsHeldForTheWholeTurn(t *testing.T) {
+	release := make(chan struct{})
+	agent := &fakeAgent{reply: "done"}
+	agent.onRun = func() { <-release }
+
+	g, fake := newGateway(t, agent, []int64{1})
+	g.typingEvery = 10 * time.Millisecond
+
+	go g.respond(context.Background(), 1, "log 65 min cardio")
+
+	// Several refreshes while the turn is still in flight — one would do
+	// nothing for a turn that queries the database and then waits on a model.
+	if !waitFor(t, func() bool { return fake.chatActionCalls() >= 3 }) {
+		t.Fatalf("typing refreshed %d times during a blocked turn, want >= 3",
+			fake.chatActionCalls())
+	}
+
+	close(release)
+	if !waitFor(t, func() bool { return len(fake.messages()) > 0 }) {
+		t.Fatal("no reply sent")
+	}
+
+	// And it stops once the answer lands: a stray action arriving afterwards
+	// would show the bot still working on something it had already answered.
+	settled := fake.chatActionCalls()
+	time.Sleep(50 * time.Millisecond)
+	if got := fake.chatActionCalls(); got != settled {
+		t.Fatalf("typing kept refreshing after the reply: %d -> %d", settled, got)
 	}
 }
 
