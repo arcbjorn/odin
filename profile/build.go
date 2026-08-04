@@ -200,6 +200,10 @@ func Build(p *Profile, log *slog.Logger) (*Runtime, error) {
 		MaxTurns:  p.Config.MaxTurns,
 		MaxTokens: p.Config.MaxTokens,
 		Effort:    p.Config.Effort,
+		// The profile's zone, not the host's: the box runs on UTC and the user
+		// does not. Both loops get it, so a scheduled job knows the hour it
+		// fired at exactly as a chat turn knows the hour it was sent.
+		Clock: func() time.Time { return time.Now().In(location) },
 	}
 	loop, err := agent.New(loopCfg)
 	if err != nil {

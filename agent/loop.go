@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
+	"time"
 
 	"github.com/arcbjorn/odin/model"
 )
@@ -40,6 +42,11 @@ type Config struct {
 	// System is the stable prompt prefix (SOUL + skills). Kept byte-identical
 	// across turns so the provider's prompt cache hits.
 	System string
+
+	// Clock reports the current time in the profile's timezone. When set, Run
+	// stamps the incoming message with it — see stampLocalTime. Nil leaves the
+	// history untouched, which is what a loop built without a profile gets.
+	Clock func() time.Time
 
 	MaxTurns  int
 	MaxTokens int
@@ -101,6 +108,9 @@ type Result struct {
 // budget is exhausted, or a guardrail trips.
 func (l *Loop) Run(ctx context.Context, history []model.Message) (*Result, error) {
 	messages := append([]model.Message(nil), history...)
+	if l.cfg.Clock != nil {
+		stampLocalTime(messages, l.cfg.Clock())
+	}
 	defs := l.cfg.Tools.Defs()
 	guard := newGuardrail(l.cfg.ExactFailureLimit, l.cfg.ToolFailureLimit)
 
@@ -180,6 +190,49 @@ func (l *Loop) Run(ctx context.Context, history []model.Message) (*Result, error
 	result.Messages = messages
 	result.Text = "Stopped: reached the maximum number of turns without finishing."
 	return result, fmt.Errorf("exceeded max turns (%d)", l.cfg.MaxTurns)
+}
+
+// localTimeMarker opens the stamp stampLocalTime writes, so the model can tell
+// the runtime's clock from the user's own words — and so a message that already
+// carries one is never stamped twice.
+const localTimeMarker = "[local time: "
+
+// localTimeLayout renders the stamp: weekday, date, wall clock, offset. The
+// weekday and offset are not decoration — a weekly review needs the first, and
+// the second is what makes the time unambiguous when the profile travels.
+const localTimeLayout = "Mon 2006-01-02 15:04 -07:00"
+
+// stampLocalTime prefixes the trailing user message with the local wall-clock
+// time at which this turn started.
+//
+// The model has no clock of its own, and without one a whole class of ordinary
+// requests is unanswerable: "finished 10 minutes ago" cannot be turned into a
+// start and end time, an event cannot be judged to fall after the profile's
+// after-hours boundary, and a session that began before midnight cannot be
+// filed under the day it actually started. The only honest move left is to ask
+// the user what time it is, which is a poor thing to ask someone holding a
+// phone that displays it.
+//
+// The stamp goes on the message and never in the system prompt. System is held
+// byte-identical across turns so the provider's prompt cache hits; a clock
+// there would miss that cache on every single call and re-bill the entire
+// prefix. Appending to the newest message leaves the cached prefix intact.
+//
+// The stamp is committed to history along with the message, so each turn keeps
+// the time it actually happened rather than being rewritten to "now" on replay
+// — which both preserves the cache and lets the model reason about when
+// something earlier in the conversation was said.
+func stampLocalTime(messages []model.Message, now time.Time) {
+	if len(messages) == 0 {
+		return
+	}
+	// Only the trailing message is new. Earlier ones were stamped when they
+	// were the trailing message and must keep the time they carry.
+	last := &messages[len(messages)-1]
+	if last.Role != model.RoleUser || strings.HasPrefix(last.Content, localTimeMarker) {
+		return
+	}
+	last.Content = localTimeMarker + now.Format(localTimeLayout) + "]\n" + last.Content
 }
 
 // invoke runs one tool, converting a panic in a handler into an error so one

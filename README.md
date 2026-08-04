@@ -225,6 +225,21 @@ and refuses to run if an applied migration's checksum changes.
 `odin timezone --profile NAME set Area/City`; `reset` returns to the committed
 default. Restart the running agent after a change so its schedule is rebuilt.
 
+That zone is also the model's clock. Every incoming message is prefixed with
+the local wall-clock time it arrived — `[local time: Tue 2026-08-04 01:10
+-03:00]` — and the database tools bind `:today` (`YYYY-MM-DD`) and `:now`
+(`YYYY-MM-DD HH:MM`). Without them the model has no clock at all: "finished ten
+minutes ago" is unresolvable, an after-hours rule cannot be evaluated, and a
+session that began before midnight gets filed under the wrong day. SQLite's own
+`date('now')` and `datetime('now')` are UTC and are the wrong answer on a host
+that runs UTC while the user does not.
+
+The stamp goes on the message rather than in the system prompt on purpose. The
+system prompt is held byte-identical across turns so the provider's prompt
+cache hits; a clock there would miss on every call and re-bill the whole
+prefix. It is also committed to history with the message, so each turn keeps
+the time it actually happened instead of being rewritten to "now" on replay.
+
 ### Job delivery
 
 Nobody is waiting on a 07:00 brief to notice it never arrived. So a scheduled

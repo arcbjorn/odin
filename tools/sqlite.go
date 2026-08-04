@@ -56,6 +56,21 @@ func (s *SQLite) Now() time.Time { return time.Now().In(s.tz) }
 // server clock or SQL date('now') — both are UTC.
 func (s *SQLite) Today() string { return s.Now().Format("2006-01-02") }
 
+// Clock returns the local wall-clock time as YYYY-MM-DD HH:MM, the form the
+// schema stores timestamps in.
+//
+// Bound as :now for the same reason as :today, only sharper: SQL's own
+// datetime('now') is UTC, so a statement reaching for it records the wrong hour
+// always and — either side of midnight — the wrong day too.
+func (s *SQLite) Clock() string { return s.Now().Format("2006-01-02 15:04") }
+
+// timeArgs binds the local clock into every statement. Both are always
+// supplied, whether or not the statement names them: an unused named argument
+// costs nothing, and a missing one would fail a write at the moment it mattered.
+func (s *SQLite) timeArgs() []any {
+	return []any{sql.Named("today", s.Today()), sql.Named("now", s.Clock())}
+}
+
 // Location exposes the database's zone for the scheduler, which must fire jobs
 // on local wall-clock time.
 func (s *SQLite) Location() *time.Location { return s.tz }
@@ -76,7 +91,9 @@ func (s *SQLite) QueryTool() agent.Tool {
 		Def: model.Tool{
 			Name: "query",
 			Description: "Run a read-only SQL SELECT against the profile database. " +
-				"Common table expressions are supported. Today's profile-local date is available as :today.",
+				"Common table expressions are supported. The profile-local clock is bound as " +
+				":today (YYYY-MM-DD) and :now (YYYY-MM-DD HH:MM). Use those — SQLite's own " +
+				"date('now') and datetime('now') read the server's UTC clock, not the user's.",
 			Schema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -96,7 +113,9 @@ func (s *SQLite) ExecTool() agent.Tool {
 		Def: model.Tool{
 			Name: "exec",
 			Description: "Run a single INSERT or UPDATE against the profile database. " +
-				"Today's profile-local date is available as :today. Destructive and schema-changing statements are not allowed.",
+				"The profile-local clock is bound as :today (YYYY-MM-DD) and :now " +
+				"(YYYY-MM-DD HH:MM); SQLite's own date('now') and datetime('now') are UTC. " +
+				"Destructive and schema-changing statements are not allowed.",
 			Schema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -143,7 +162,7 @@ func (s *SQLite) handleQuery(ctx context.Context, raw json.RawMessage) (string, 
 		_, _ = conn.ExecContext(resetCtx, `PRAGMA query_only = OFF`)
 	}()
 
-	rows, err := conn.QueryContext(ctx, stmt, sql.Named("today", s.Today()))
+	rows, err := conn.QueryContext(ctx, stmt, s.timeArgs()...)
 	if err != nil {
 		return "", fmt.Errorf("sql error: %w", err)
 	}
@@ -174,7 +193,7 @@ func (s *SQLite) handleExec(ctx context.Context, raw json.RawMessage) (string, e
 	}
 	defer tx.Rollback()
 
-	res, err := tx.ExecContext(ctx, stmt, sql.Named("today", s.Today()))
+	res, err := tx.ExecContext(ctx, stmt, s.timeArgs()...)
 	if err != nil {
 		return "", fmt.Errorf("sql error: %w", err)
 	}

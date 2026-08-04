@@ -6,7 +6,9 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/arcbjorn/odin/model"
 )
@@ -387,5 +389,112 @@ func TestUsageAccumulatesAcrossTurns(t *testing.T) {
 	}
 	if res.RateLimit == nil || res.RateLimit.RequestsMin.Remaining != 75 {
 		t.Fatalf("rate limit = %+v", res.RateLimit)
+	}
+}
+
+// fixedClock is a profile-local clock frozen at a known wall-clock time.
+func fixedClock(t *testing.T, stamp string) func() time.Time {
+	t.Helper()
+	// UTC-3: the host runs on UTC and the user does not, which is the whole
+	// reason the stamp exists.
+	loc := time.FixedZone("", -3*60*60)
+	at, err := time.ParseInLocation("2006-01-02 15:04", stamp, loc)
+	if err != nil {
+		t.Fatalf("parse %q: %v", stamp, err)
+	}
+	return func() time.Time { return at }
+}
+
+// Without a clock the model cannot resolve "finished 10 minutes ago" into a
+// start and an end, and its only honest move is to ask the user what time it
+// is — while they are holding a phone that displays it.
+func TestClockStampsTheIncomingMessage(t *testing.T) {
+	p := &scriptedProvider{responses: []*model.Response{textResponse("logged")}}
+	l := quietLoop(t, Config{
+		Provider: p,
+		Tools:    NewRegistry(),
+		Clock:    fixedClock(t, "2026-08-04 01:10"),
+	})
+
+	if _, err := l.Run(context.Background(), userMsg("65 min cardio, finished 10 min ago")); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	sent := p.requests[0].Messages[0].Content
+	if !strings.HasPrefix(sent, "[local time: Tue 2026-08-04 01:10 -03:00]\n") {
+		t.Fatalf("message not stamped with the local clock:\n%s", sent)
+	}
+	if !strings.HasSuffix(sent, "65 min cardio, finished 10 min ago") {
+		t.Fatalf("stamp did not preserve the user's words:\n%s", sent)
+	}
+}
+
+// The stamp is committed to history with the message. Rewriting an old turn to
+// "now" would both break the prompt cache and destroy the record of when the
+// user actually said something.
+func TestClockDoesNotRestampEarlierTurns(t *testing.T) {
+	p := &scriptedProvider{responses: []*model.Response{textResponse("ok")}}
+	l := quietLoop(t, Config{
+		Provider: p,
+		Tools:    NewRegistry(),
+		Clock:    fixedClock(t, "2026-08-04 01:10"),
+	})
+
+	history := []model.Message{
+		{Role: model.RoleUser, Content: "[local time: Mon 2026-08-03 22:40 -03:00]\nswam 2k"},
+		{Role: model.RoleAssistant, Content: "Logged."},
+		{Role: model.RoleUser, Content: "and 65 min cardio"},
+	}
+	if _, err := l.Run(context.Background(), history); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	sent := p.requests[0].Messages
+	if sent[0].Content != history[0].Content {
+		t.Fatalf("earlier turn was rewritten:\n%s", sent[0].Content)
+	}
+	if !strings.HasPrefix(sent[2].Content, "[local time: Tue 2026-08-04 01:10") {
+		t.Fatalf("newest turn not stamped:\n%s", sent[2].Content)
+	}
+}
+
+// A second Run over the same committed history must not stack stamps, and the
+// caller's slice is never mutated behind its back.
+func TestClockStampsOnlyOnceAndLeavesCallerHistoryAlone(t *testing.T) {
+	p := &scriptedProvider{responses: []*model.Response{textResponse("ok")}}
+	l := quietLoop(t, Config{
+		Provider: p,
+		Tools:    NewRegistry(),
+		Clock:    fixedClock(t, "2026-08-04 01:10"),
+	})
+
+	history := userMsg("65 min cardio")
+	res, err := l.Run(context.Background(), history)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if history[0].Content != "65 min cardio" {
+		t.Fatalf("caller history mutated: %q", history[0].Content)
+	}
+
+	if _, err := l.Run(context.Background(), res.Messages[:1]); err != nil {
+		t.Fatalf("second Run: %v", err)
+	}
+	if got := strings.Count(p.requests[1].Messages[0].Content, "[local time: "); got != 1 {
+		t.Fatalf("stamp applied %d times on replay", got)
+	}
+}
+
+// A loop built without a profile has no timezone to be authoritative about, so
+// it invents nothing.
+func TestNoClockLeavesTheMessageUntouched(t *testing.T) {
+	p := &scriptedProvider{responses: []*model.Response{textResponse("ok")}}
+	l := quietLoop(t, Config{Provider: p, Tools: NewRegistry()})
+
+	if _, err := l.Run(context.Background(), userMsg("65 min cardio")); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := p.requests[0].Messages[0].Content; got != "65 min cardio" {
+		t.Fatalf("message altered without a clock: %q", got)
 	}
 }

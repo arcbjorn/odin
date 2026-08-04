@@ -127,6 +127,54 @@ func TestTodayParameterResolvesToLocalDate(t *testing.T) {
 	}
 }
 
+// :now is the local wall clock in the form the schema stores. Without it a
+// statement that needs the current time has only datetime('now'), which is UTC
+// — the wrong hour always, and the wrong day either side of midnight.
+func TestNowParameterResolvesToLocalWallClock(t *testing.T) {
+	s := newDB(t, "America/New_York")
+
+	before := s.Clock()
+	if _, err := callTool(t, s.handleExec,
+		`INSERT INTO work_sessions(project_id, started_at) VALUES (1, :now)`); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	after := s.Clock()
+
+	out, err := callTool(t, s.handleQuery, `SELECT started_at FROM work_sessions`)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	// A minute can turn over mid-test; either side of it is correct.
+	if !strings.Contains(out, before) && !strings.Contains(out, after) {
+		t.Fatalf("started_at is not the local clock (%s):\n%s", before, out)
+	}
+	if utc := time.Now().UTC().Format("2006-01-02 15:04"); strings.Contains(out, utc) {
+		t.Fatalf("started_at is the server's UTC clock (%s), not the profile's:\n%s", utc, out)
+	}
+}
+
+// The reported failure: "65 min cardio, finished 10 min ago" is a complete
+// session once there is a clock to subtract from, and the subtraction can be
+// pushed into SQL rather than done from a guessed time.
+func TestNowSupportsRelativeArithmetic(t *testing.T) {
+	s := newDB(t, "America/New_York")
+
+	ins := `INSERT INTO work_sessions(project_id, started_at, ended_at)
+	        VALUES (1, datetime(:now, '-75 minutes'), datetime(:now, '-10 minutes'))`
+	if _, err := callTool(t, s.handleExec, ins); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	out, err := callTool(t, s.handleQuery,
+		`SELECT cast((julianday(ended_at) - julianday(started_at)) * 1440 + 0.5 AS integer) FROM work_sessions`)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if !strings.Contains(out, "65") {
+		t.Fatalf("expected a 65 minute session:\n%s", out)
+	}
+}
+
 func TestQueryRejectsWrites(t *testing.T) {
 	s := newDB(t, "UTC")
 	writes := []string{
