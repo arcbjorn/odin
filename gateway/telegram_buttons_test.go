@@ -201,3 +201,176 @@ func TestCallbackFromStrangerIsIgnored(t *testing.T) {
 		t.Fatalf("an unauthorized tap reached the agent (%d calls)", n)
 	}
 }
+
+// splitBrief is a numbered brief long enough to split, with the list in the
+// first chunk and the closing question in the second. It reproduces the case
+// verdictButtons is deliberately derived from the whole reply for: the
+// keyboard's items are not present in the chunk that carries the keyboard.
+func splitBrief(t *testing.T) string {
+	t.Helper()
+	brief := strings.Join([]string{
+		"1. Ando retrospective, MAAT — closes Aug 20",
+		"2. Fabrica coffee, Príncipe Real — new roaster",
+		"3. Sintra ride, N247 — coast road",
+		strings.Repeat("context ", 700),
+		"",
+		"reply with numbers — worth it?",
+	}, "\n")
+	if got := len(splitMessage(brief, maxMessageRunes)); got != 2 {
+		t.Fatalf("fixture split into %d chunks, want exactly 2", got)
+	}
+	return brief
+}
+
+// markupCount reports how many sends carried a keyboard.
+func markupCount(markups []string) int {
+	n := 0
+	for _, m := range markups {
+		if m != "" {
+			n++
+		}
+	}
+	return n
+}
+
+// The keyboard belongs on the last chunk only. Attached to the first, it would
+// sit stranded mid-brief above text the user has not read yet; attached to
+// every chunk, the same verdict could be recorded twice.
+func TestVerdictButtonsRideOnTheFinalChunkOnly(t *testing.T) {
+	g, fake := newGatewayWithOutbox(t, "")
+
+	if _, err := g.send(context.Background(), 1, splitBrief(t)); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+
+	markups := fake.sentMarkups()
+	if len(markups) != 2 {
+		t.Fatalf("sent %d chunks, want 2", len(markups))
+	}
+	if markups[0] != "" {
+		t.Errorf("first chunk carried a keyboard: %s", markups[0])
+	}
+	if markups[1] == "" {
+		t.Fatal("final chunk carried no keyboard")
+	}
+
+	// Derived from the whole reply: the items are in chunk one, but the
+	// keyboard on chunk two must still offer all three.
+	var kb struct {
+		InlineKeyboard [][]struct {
+			Text string `json:"text"`
+		} `json:"inline_keyboard"`
+	}
+	if err := json.Unmarshal([]byte(markups[1]), &kb); err != nil {
+		t.Fatalf("decode markup: %v", err)
+	}
+	if len(kb.InlineKeyboard) == 0 || len(kb.InlineKeyboard[0]) != 3 {
+		t.Fatalf("keyboard did not reflect the whole brief: %s", markups[1])
+	}
+}
+
+// A brief that is not a numbered list must send exactly as it did before the
+// keyboard existed.
+func TestPlainReplyCarriesNoKeyboard(t *testing.T) {
+	g, fake := newGatewayWithOutbox(t, "")
+
+	if _, err := g.send(context.Background(), 1, "just a sentence, nothing to rank"); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+
+	if n := markupCount(fake.sentMarkups()); n != 0 {
+		t.Fatalf("%d sends carried a keyboard, want 0", n)
+	}
+}
+
+// The interaction the two rebased lines create: a multi-chunk brief whose final
+// chunk fails is requeued, and the retry must still arrive with its keyboard.
+// Losing it would leave a brief the user can only answer by typing — the exact
+// friction the buttons exist to remove — and the failure would be silent,
+// because the text still looks correct.
+func TestRequeuedFinalChunkKeepsItsKeyboard(t *testing.T) {
+	g, fake := newGatewayWithOutbox(t, "")
+	brief := splitBrief(t)
+
+	// The first chunk lands, then Telegram goes down on the one holding the
+	// keyboard.
+	fake.setFailSends(true, 1)
+	if err := g.Notify(context.Background(), 1, brief); err == nil {
+		t.Fatal("partial delivery must still report failure")
+	}
+
+	fake.setFailSends(false, 0)
+	g.outbox.flush(context.Background(), g.sendWithButtons, time.Now())
+
+	markups := fake.sentMarkups()
+	if n := markupCount(markups); n != 1 {
+		t.Fatalf("%d delivered sends carried a keyboard, want exactly 1: %v", n, markups)
+	}
+	if last := markups[len(markups)-1]; last == "" {
+		t.Fatal("the retried final chunk arrived without its keyboard")
+	}
+}
+
+// A requeued tail inherits the keyboard the whole brief earned, even when the
+// tail itself is pure prose.
+//
+// The numbered list is not in the retried text, but it did reach the chat in
+// the chunk that landed — the user can scroll up and read items 1 and 2. So the
+// keyboard still refers to something visible, and attaching it is what lets the
+// verdict be a tap. Re-deriving from the fragment instead would drop it.
+func TestRequeuedTailInheritsTheBriefsKeyboard(t *testing.T) {
+	g, fake := newGatewayWithOutbox(t, "")
+
+	// Numbered list in the first chunk, prose in the second.
+	brief := strings.Join([]string{
+		"1. first item",
+		"2. second item",
+		strings.Repeat("prose ", 700),
+	}, "\n")
+	if got := len(splitMessage(brief, maxMessageRunes)); got != 2 {
+		t.Fatalf("fixture split into %d chunks, want exactly 2", got)
+	}
+	// The tail alone yields no keyboard — the point of the fix.
+	tail := splitMessage(brief, maxMessageRunes)[1]
+	if verdictButtons(tail) != nil {
+		t.Fatal("fixture tail must not derive a keyboard on its own")
+	}
+
+	fake.setFailSends(true, 1)
+	if err := g.Notify(context.Background(), 1, brief); err == nil {
+		t.Fatal("partial delivery must still report failure")
+	}
+
+	fake.setFailSends(false, 0)
+	g.outbox.flush(context.Background(), g.sendWithButtons, time.Now())
+
+	markups := fake.sentMarkups()
+	if n := markupCount(markups); n != 1 {
+		t.Fatalf("%d sends carried a keyboard, want exactly 1: %v", n, markups)
+	}
+	if last := markups[len(markups)-1]; last == "" {
+		t.Fatal("the retried tail lost the keyboard the brief earned")
+	}
+}
+
+// A message that never had a keyboard must not acquire one on retry.
+func TestRequeuedPlainMessageStaysPlain(t *testing.T) {
+	g, fake := newGatewayWithOutbox(t, "")
+
+	long := strings.Repeat("alpha ", 500) + "\n\n" + strings.Repeat("omega ", 500)
+	if got := len(splitMessage(long, maxMessageRunes)); got != 2 {
+		t.Fatalf("fixture split into %d chunks, want exactly 2", got)
+	}
+
+	fake.setFailSends(true, 1)
+	if err := g.Notify(context.Background(), 1, long); err == nil {
+		t.Fatal("partial delivery must still report failure")
+	}
+
+	fake.setFailSends(false, 0)
+	g.outbox.flush(context.Background(), g.sendWithButtons, time.Now())
+
+	if n := markupCount(fake.sentMarkups()); n != 0 {
+		t.Fatalf("%d sends carried a keyboard, want 0 — this brief never had one", n)
+	}
+}

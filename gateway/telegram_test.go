@@ -56,11 +56,12 @@ func (f *fakeAgent) callCount() int {
 type fakeTelegram struct {
 	mu          sync.Mutex
 	sent        []string
-	deleted     []int64 // message_ids passed to deleteMessage
-	nextMsgID   int64   // monotonic id handed back by sendMessage
-	setCommands int     // times setMyCommands was called
-	getResult   string  // what getMyCommands returns (default: empty set)
-	chatActions int     // times sendChatAction was called
+	markups     []string // reply_markup per send, "" when none; parallel to sent
+	deleted     []int64  // message_ids passed to deleteMessage
+	nextMsgID   int64    // monotonic id handed back by sendMessage
+	setCommands int      // times setMyCommands was called
+	getResult   string   // what getMyCommands returns (default: empty set)
+	chatActions int      // times sendChatAction was called
 
 	// failSends makes send methods return an API error, standing in for a
 	// Telegram outage. sendsBeforeFail lets the first N succeed, which is how
@@ -113,6 +114,7 @@ func (f *fakeTelegram) server(t *testing.T) *httptest.Server {
 				return
 			}
 			f.sent = append(f.sent, rm.Markdown)
+			f.markups = append(f.markups, r.FormValue("reply_markup"))
 			f.nextMsgID++
 			id := f.nextMsgID
 			f.mu.Unlock()
@@ -126,6 +128,7 @@ func (f *fakeTelegram) server(t *testing.T) *httptest.Server {
 				return
 			}
 			f.sent = append(f.sent, r.FormValue("text"))
+			f.markups = append(f.markups, r.FormValue("reply_markup"))
 			f.nextMsgID++
 			id := f.nextMsgID
 			f.mu.Unlock()
@@ -176,6 +179,15 @@ func (f *fakeTelegram) messages() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]string(nil), f.sent...)
+}
+
+// sentMarkups returns the reply_markup of each send in order, "" where none was
+// attached — so a test can assert which chunk carried the keyboard, not merely
+// that some send did.
+func (f *fakeTelegram) sentMarkups() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.markups...)
 }
 
 func (f *fakeTelegram) deletedIDs() []int64 {

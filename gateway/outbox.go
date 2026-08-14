@@ -50,6 +50,12 @@ type outboxEntry struct {
 	Text     string    `json:"text"`
 	QueuedAt time.Time `json:"queued_at"`
 	Attempts int       `json:"attempts"`
+
+	// Buttons is the keyboard derived from the original message, kept because
+	// the queued text is often only the tail of it — re-deriving from that
+	// remainder loses the numbered list and delivers the brief bare. Empty for
+	// a message that never had one, and for entries written by an older build.
+	Buttons []byte `json:"buttons,omitempty"`
 }
 
 type outboxFile struct {
@@ -90,11 +96,19 @@ func newOutbox(path string, log *slog.Logger) *outbox {
 // queue stores a message for a later attempt, dropping the oldest entries
 // once the queue is full.
 func (o *outbox) queue(chatID int64, text string, now time.Time) {
+	o.queueWithButtons(chatID, text, nil, now)
+}
+
+// queueWithButtons is queue, preserving the keyboard the original message
+// carried so a retried remainder is not delivered bare.
+func (o *outbox) queueWithButtons(chatID int64, text string, buttons []byte, now time.Time) {
 	if text == "" {
 		return
 	}
 	o.mu.Lock()
-	o.entries = append(o.entries, outboxEntry{ChatID: chatID, Text: text, QueuedAt: now})
+	o.entries = append(o.entries, outboxEntry{
+		ChatID: chatID, Text: text, Buttons: buttons, QueuedAt: now,
+	})
 	if len(o.entries) > maxOutboxEntries {
 		dropped := len(o.entries) - maxOutboxEntries
 		o.log.Warn("outbox full, dropping oldest messages", "dropped", dropped)
@@ -105,9 +119,11 @@ func (o *outbox) queue(chatID int64, text string, now time.Time) {
 }
 
 // sender delivers one message, returning whatever was left undelivered. It is
-// satisfied by Telegram.send, so a partial multi-chunk send re-queues only the
-// chunks that never landed instead of repeating the ones that did.
-type sender func(ctx context.Context, chatID int64, text string) (undelivered string, err error)
+// satisfied by Telegram.sendWithButtons, so a partial multi-chunk send
+// re-queues only the chunks that never landed instead of repeating the ones
+// that did, and a retry keeps the keyboard the original message carried.
+// buttons nil means "derive from text".
+type sender func(ctx context.Context, chatID int64, text string, buttons []byte) (undelivered string, err error)
 
 // flush retries every queued message once. Entries that are too old or that
 // have failed too often are dropped with a warning: at some point a message
@@ -136,7 +152,7 @@ func (o *outbox) flush(ctx context.Context, deliver sender, now time.Time) {
 		}
 
 		entry.Attempts++
-		undelivered, err := deliver(ctx, entry.ChatID, withDelayNotice(entry.Text, age))
+		undelivered, err := deliver(ctx, entry.ChatID, withDelayNotice(entry.Text, age), entry.Buttons)
 		if err == nil {
 			delivered++
 			continue

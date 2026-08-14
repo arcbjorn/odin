@@ -63,7 +63,7 @@ func TestOutboxRetriesUntilDelivered(t *testing.T) {
 
 	// Telegram comes back.
 	fake.setFailSends(false, 0)
-	g.outbox.flush(context.Background(), g.send, time.Now())
+	g.outbox.flush(context.Background(), g.sendWithButtons, time.Now())
 
 	if got := g.outbox.pending(); got != 0 {
 		t.Fatalf("pending = %d, want the queue drained", got)
@@ -91,7 +91,7 @@ func TestOutboxSurvivesRestart(t *testing.T) {
 	if got := second.outbox.pending(); got != 1 {
 		t.Fatalf("restored pending = %d, want 1", got)
 	}
-	second.outbox.flush(context.Background(), second.send, time.Now())
+	second.outbox.flush(context.Background(), second.sendWithButtons, time.Now())
 
 	if got := second.outbox.pending(); got != 0 {
 		t.Fatalf("pending after flush = %d", got)
@@ -108,7 +108,7 @@ func TestOutboxLabelsDelayedMessages(t *testing.T) {
 	queued := time.Now()
 	g.outbox.queue(1, "the morning brief", queued)
 
-	g.outbox.flush(context.Background(), g.send, queued.Add(3*time.Hour))
+	g.outbox.flush(context.Background(), g.sendWithButtons, queued.Add(3*time.Hour))
 
 	msgs := fake.messages()
 	if len(msgs) != 1 {
@@ -127,7 +127,7 @@ func TestOutboxDeliversPromptRetryWithoutALabel(t *testing.T) {
 	queued := time.Now()
 	g.outbox.queue(1, "the morning brief", queued)
 
-	g.outbox.flush(context.Background(), g.send, queued.Add(30*time.Second))
+	g.outbox.flush(context.Background(), g.sendWithButtons, queued.Add(30*time.Second))
 
 	if msgs := fake.messages(); len(msgs) != 1 || strings.Contains(msgs[0], "delayed") {
 		t.Fatalf("a prompt retry needs no delay label: %v", msgs)
@@ -141,7 +141,7 @@ func TestOutboxDropsStaleMessages(t *testing.T) {
 	queued := time.Now()
 	g.outbox.queue(1, "yesterday's brief", queued)
 
-	g.outbox.flush(context.Background(), g.send, queued.Add(maxOutboxAge+time.Minute))
+	g.outbox.flush(context.Background(), g.sendWithButtons, queued.Add(maxOutboxAge+time.Minute))
 
 	if got := g.outbox.pending(); got != 0 {
 		t.Fatalf("pending = %d, want the stale entry dropped", got)
@@ -158,7 +158,7 @@ func TestOutboxDropsAfterTooManyAttempts(t *testing.T) {
 	g.outbox.queue(1, "the morning brief", now)
 
 	for i := 0; i < maxOutboxAttempts+1; i++ {
-		g.outbox.flush(context.Background(), g.send, now)
+		g.outbox.flush(context.Background(), g.sendWithButtons, now)
 	}
 	if got := g.outbox.pending(); got != 0 {
 		t.Fatalf("pending = %d, want the entry abandoned after %d attempts", got, maxOutboxAttempts)
@@ -198,7 +198,7 @@ func TestOutboxQueuesOnlyUndeliveredChunks(t *testing.T) {
 	}
 
 	fake.setFailSends(false, 0)
-	g.outbox.flush(context.Background(), g.send, time.Now())
+	g.outbox.flush(context.Background(), g.sendWithButtons, time.Now())
 
 	msgs := fake.messages()
 	withAlpha, withOmega := 0, 0

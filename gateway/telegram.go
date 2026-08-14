@@ -324,7 +324,7 @@ func (t *Telegram) Run(ctx context.Context) error {
 		// already wakes roughly once a minute and only runs when Telegram is
 		// reachable, so it needs no timer of its own — and a queue that is
 		// empty, which is the normal case, costs nothing here.
-		t.outbox.flush(ctx, t.send, time.Now())
+		t.outbox.flush(ctx, t.sendWithButtons, time.Now())
 	}
 }
 

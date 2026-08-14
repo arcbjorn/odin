@@ -17,15 +17,28 @@ import (
 // must not lose the message can then queue exactly the remainder instead of
 // repeating chunks the user already received.
 func (t *Telegram) send(ctx context.Context, chatID int64, text string) (undelivered string, err error) {
+	return t.sendWithButtons(ctx, chatID, text, nil)
+}
+
+// sendWithButtons is send with the keyboard supplied rather than derived.
+//
+// A retry of a partial send carries only the chunks that never landed, and that
+// remainder usually no longer holds the numbered list — re-deriving from it
+// would yield nil and the brief would arrive with no keyboard at all. So the
+// caller that already knows the original keyboard passes it back in. buttons
+// nil means "derive from text", which is every first attempt.
+func (t *Telegram) sendWithButtons(ctx context.Context, chatID int64, text string, buttons []byte) (undelivered string, err error) {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return "", nil
 	}
 
-	// Derived from the whole reply, not the final chunk: a split could put the
-	// numbered list in one message and its closing question in the next, and
-	// the keyboard has to reflect every item he can see.
-	buttons := verdictButtons(text)
+	if buttons == nil {
+		// Derived from the whole reply, not the final chunk: a split could put
+		// the numbered list in one message and its closing question in the
+		// next, and the keyboard has to reflect every item he can see.
+		buttons = verdictButtons(text)
+	}
 
 	chunks := splitMessage(text, maxMessageRunes)
 	for i, chunk := range chunks {
@@ -172,12 +185,17 @@ func (t *Telegram) Notify(ctx context.Context, chatID int64, text string) error 
 		// addressed to someone who is not allowed to receive it.
 		return fmt.Errorf("chat %d is not in the allowlist", chatID)
 	}
-	undelivered, err := t.send(ctx, chatID, text)
+	// Derived here, before the split, so a partial failure can queue the
+	// remainder together with the keyboard the whole brief earned. The tail on
+	// its own rarely still holds the numbered list.
+	buttons := verdictButtons(text)
+
+	undelivered, err := t.sendWithButtons(ctx, chatID, text, buttons)
 	if err == nil {
 		return nil
 	}
 	if undelivered != "" {
-		t.outbox.queue(chatID, undelivered, time.Now())
+		t.outbox.queueWithButtons(chatID, undelivered, buttons, time.Now())
 	}
 	return fmt.Errorf("deliver to chat %d (queued for retry): %w", chatID, err)
 }
