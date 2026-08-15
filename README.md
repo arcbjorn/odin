@@ -106,9 +106,12 @@ api_key_env = "OPENAI_API_KEY"  # or api_key_cmd, never the key itself
 ```
 
 **Toolsets:** `db` (SQLite read/write), `file` (scoped notes),
-`skills` (markdown procedures), `web` (fetch + optional search), and `shell`
-(operator-confined command inspection). `web` search plugs into a self-hosted
-SearXNG when `search_url` is set.
+`skills` (markdown procedures), `web` (fetch + optional search), `shell`
+(operator-confined command inspection), and `akunaki` (read-only access to an
+[akunaki](https://github.com/arcbjorn/akunaki) health backend's `/v1/tools`
+registry over a bearer service token; `[akunaki]` sets `base_url` and
+`token_env`). `web` search plugs into a self-hosted SearXNG when `search_url`
+is set.
 
 **Credentials:** a provider names either `api_key_env` (an environment
 variable, injected by systemd from a `0600` `EnvironmentFile`) or
