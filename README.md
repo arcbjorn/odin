@@ -107,11 +107,19 @@ api_key_env = "OPENAI_API_KEY"  # or api_key_cmd, never the key itself
 
 **Toolsets:** `db` (SQLite read/write), `file` (scoped notes),
 `skills` (markdown procedures), `web` (fetch + optional search), `shell`
-(operator-confined command inspection), and `akunaki` (read-only access to an
-[akunaki](https://github.com/arcbjorn/akunaki) health backend's `/v1/tools`
-registry over a bearer service token; `[akunaki]` sets `base_url` and
-`token_env`). `web` search plugs into a self-hosted SearXNG when `search_url`
-is set.
+(operator-confined command inspection), and `toolreg` (remote typed tool
+registries: each `[[toolreg]]` table names a registry and sets `url` — the
+catalog endpoint — and `token_env` for its bearer token, exposing
+`<name>_tools` to list the catalog and `<name>_tool` to invoke one entry;
+the registry stays the authority on what exists and what the credential may
+do). `web` search plugs into a self-hosted SearXNG when `search_url` is set.
+
+```toml
+[[toolreg]]
+name = "health"                             # tools: health_tools, health_tool
+url = "https://backend.example.com/v1/tools"
+token_env = "HEALTH_SERVICE_TOKEN"
+```
 
 **Credentials:** a provider names either `api_key_env` (an environment
 variable, injected by systemd from a `0600` `EnvironmentFile`) or
