@@ -28,17 +28,21 @@ func parseConfig(src string) (Config, error) {
 		// [[providers]] starts a new provider; [telegram] switches section.
 		if strings.HasPrefix(line, "[[") {
 			name := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(line, "[["), "]]"))
-			if name != "providers" {
+			switch name {
+			case "providers":
+				cfg.Providers = append(cfg.Providers, ProviderConfig{})
+			case "toolreg":
+				cfg.ToolRegs = append(cfg.ToolRegs, ToolRegConfig{})
+			default:
 				return cfg, fmt.Errorf("line %d: unknown array table [[%s]]", lineNo, name)
 			}
-			cfg.Providers = append(cfg.Providers, ProviderConfig{})
-			section = "providers"
+			section = name
 			continue
 		}
 		if strings.HasPrefix(line, "[") {
 			section = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(line, "["), "]"))
 			switch section {
-			case "telegram", "agent", "web", "database", "akunaki":
+			case "telegram", "agent", "web", "database":
 			default:
 				return cfg, fmt.Errorf("line %d: unknown table [%s]", lineNo, section)
 			}
@@ -145,22 +149,32 @@ func assign(cfg *Config, section, key, value string, lineNo int) error {
 			return fmt.Errorf("line %d: unknown key %q in [database]", lineNo, key)
 		}
 
-	case "akunaki":
+	case "toolreg":
+		if len(cfg.ToolRegs) == 0 {
+			return fmt.Errorf("line %d: key %q outside any [[toolreg]] block", lineNo, key)
+		}
+		reg := &cfg.ToolRegs[len(cfg.ToolRegs)-1]
 		switch key {
-		case "base_url":
+		case "name":
 			s, err := parseString(value)
 			if err != nil {
-				return fmt.Errorf("line %d: base_url: %w", lineNo, err)
+				return fmt.Errorf("line %d: name: %w", lineNo, err)
 			}
-			cfg.Akunaki.BaseURL = s
+			reg.Name = s
+		case "url":
+			s, err := parseString(value)
+			if err != nil {
+				return fmt.Errorf("line %d: url: %w", lineNo, err)
+			}
+			reg.URL = s
 		case "token_env":
 			s, err := parseString(value)
 			if err != nil {
 				return fmt.Errorf("line %d: token_env: %w", lineNo, err)
 			}
-			cfg.Akunaki.TokenEnv = s
+			reg.TokenEnv = s
 		default:
-			return fmt.Errorf("line %d: unknown key %q in [akunaki]", lineNo, key)
+			return fmt.Errorf("line %d: unknown key %q in [[toolreg]]", lineNo, key)
 		}
 
 	case "telegram":

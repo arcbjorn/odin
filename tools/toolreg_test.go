@@ -9,32 +9,56 @@ import (
 	"testing"
 )
 
-func newAkunaki(t *testing.T, baseURL string) *Akunaki {
+func newToolReg(t *testing.T, registryURL string) *ToolReg {
 	t.Helper()
-	a, err := NewAkunaki(AkunakiConfig{BaseURL: baseURL, Token: "aksvc_test"})
+	r, err := NewToolReg(ToolRegConfig{Name: "health", RegistryURL: registryURL, Token: "tok_test"})
 	if err != nil {
-		t.Fatalf("NewAkunaki: %v", err)
+		t.Fatalf("NewToolReg: %v", err)
 	}
-	return a
+	return r
 }
 
-func TestNewAkunakiRequiresBaseURLAndToken(t *testing.T) {
-	cases := []AkunakiConfig{
-		{BaseURL: "", Token: "aksvc_x"},
-		{BaseURL: "https://api.example.com", Token: ""},
-		{BaseURL: "   ", Token: "aksvc_x"},
-		{BaseURL: "not-a-url", Token: "aksvc_x"},
-		{BaseURL: "ftp://api.example.com", Token: "aksvc_x"},
+func TestNewToolRegRequiresNameURLAndToken(t *testing.T) {
+	cases := []ToolRegConfig{
+		{Name: "", RegistryURL: "https://api.example.com/v1/tools", Token: "x"},
+		{Name: "Health", RegistryURL: "https://api.example.com/v1/tools", Token: "x"},
+		{Name: "1health", RegistryURL: "https://api.example.com/v1/tools", Token: "x"},
+		{Name: "he-alth", RegistryURL: "https://api.example.com/v1/tools", Token: "x"},
+		{Name: strings.Repeat("a", 25), RegistryURL: "https://api.example.com/v1/tools", Token: "x"},
+		{Name: "health", RegistryURL: "", Token: "x"},
+		{Name: "health", RegistryURL: "   ", Token: "x"},
+		{Name: "health", RegistryURL: "not-a-url", Token: "x"},
+		{Name: "health", RegistryURL: "ftp://api.example.com", Token: "x"},
+		{Name: "health", RegistryURL: "https://api.example.com/v1/tools", Token: ""},
 	}
 	for _, cfg := range cases {
-		if _, err := NewAkunaki(cfg); err == nil {
+		if _, err := NewToolReg(cfg); err == nil {
 			t.Errorf("expected config %+v to be refused", cfg)
 		}
 	}
 }
 
-// The token authenticates every call; the list call carries no body.
-func TestListSendsBearerAndReturnsBody(t *testing.T) {
+// Tool names derive from the registry name, so two registries can coexist in
+// one profile without colliding.
+func TestToolNamesDeriveFromRegistryName(t *testing.T) {
+	r, err := NewToolReg(ToolRegConfig{
+		Name: "finance", RegistryURL: "https://api.invalid/tools", Token: "x",
+	})
+	if err != nil {
+		t.Fatalf("NewToolReg: %v", err)
+	}
+	tools := r.Tools()
+	if len(tools) != 2 {
+		t.Fatalf("expected 2 tools, got %d", len(tools))
+	}
+	if tools[0].Def.Name != "finance_tools" || tools[1].Def.Name != "finance_tool" {
+		t.Errorf("names = %q, %q", tools[0].Def.Name, tools[1].Def.Name)
+	}
+}
+
+// The token authenticates every call; list GETs exactly the configured URL —
+// no path beyond it is assumed.
+func TestListSendsBearerToTheConfiguredURL(t *testing.T) {
 	var gotAuth, gotPath string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAuth = r.Header.Get("Authorization")
@@ -44,23 +68,23 @@ func TestListSendsBearerAndReturnsBody(t *testing.T) {
 	}))
 	defer server.Close()
 
-	a := newAkunaki(t, server.URL)
-	out, err := a.handleList(context.Background(), nil)
+	r := newToolReg(t, server.URL+"/v1/tools")
+	out, err := r.handleList(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("handleList: %v", err)
 	}
-	if gotAuth != "Bearer aksvc_test" {
+	if gotAuth != "Bearer tok_test" {
 		t.Errorf("Authorization = %q", gotAuth)
 	}
 	if gotPath != "/v1/tools" {
 		t.Errorf("path = %q", gotPath)
 	}
 	if !strings.Contains(out, "health.get_today") {
-		t.Errorf("output missing tool name: %q", out)
+		t.Errorf("output missing entry name: %q", out)
 	}
 }
 
-func TestInvokePostsWrappedInput(t *testing.T) {
+func TestInvokePostsWrappedInputUnderTheRegistry(t *testing.T) {
 	var gotPath, gotBody string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
@@ -71,12 +95,12 @@ func TestInvokePostsWrappedInput(t *testing.T) {
 	}))
 	defer server.Close()
 
-	a := newAkunaki(t, server.URL)
+	r := newToolReg(t, server.URL+"/v1/tools")
 	raw, _ := json.Marshal(map[string]any{
 		"name":  "health.get_sleep",
 		"input": map[string]any{"day": "2026-08-15"},
 	})
-	out, err := a.handleInvoke(context.Background(), raw)
+	out, err := r.handleInvoke(context.Background(), raw)
 	if err != nil {
 		t.Fatalf("handleInvoke: %v", err)
 	}
@@ -101,8 +125,8 @@ func TestInvokeOmittedInputBecomesEmptyObject(t *testing.T) {
 	}))
 	defer server.Close()
 
-	a := newAkunaki(t, server.URL)
-	if _, err := a.handleInvoke(context.Background(), json.RawMessage(`{"name":"connections.list"}`)); err != nil {
+	r := newToolReg(t, server.URL+"/v1/tools")
+	if _, err := r.handleInvoke(context.Background(), json.RawMessage(`{"name":"connections.list"}`)); err != nil {
 		t.Fatalf("handleInvoke: %v", err)
 	}
 	if gotBody != `{"input":{}}` {
@@ -110,10 +134,10 @@ func TestInvokeOmittedInputBecomesEmptyObject(t *testing.T) {
 	}
 }
 
-// The name becomes a path segment; anything that could steer the request off
-// /v1/tools/ is refused before a request exists.
+// The entry name becomes a path segment; anything that could steer the
+// request off the registry is refused before a request exists.
 func TestInvokeRejectsPathSteeringNames(t *testing.T) {
-	a := newAkunaki(t, "https://api.invalid")
+	r := newToolReg(t, "https://api.invalid/v1/tools")
 	for _, name := range []string{
 		"",
 		"../privacy",
@@ -124,7 +148,7 @@ func TestInvokeRejectsPathSteeringNames(t *testing.T) {
 		"tools#frag",
 	} {
 		raw, _ := json.Marshal(map[string]string{"name": name})
-		if _, err := a.handleInvoke(context.Background(), raw); err == nil {
+		if _, err := r.handleInvoke(context.Background(), raw); err == nil {
 			t.Errorf("expected name %q to be refused", name)
 		}
 	}
@@ -139,9 +163,9 @@ func TestErrorStatusSurfacesBoundedSnippet(t *testing.T) {
 	}))
 	defer server.Close()
 
-	a := newAkunaki(t, server.URL)
+	r := newToolReg(t, server.URL+"/v1/tools")
 	raw, _ := json.Marshal(map[string]string{"name": "connections.sync"})
-	_, err := a.handleInvoke(context.Background(), raw)
+	_, err := r.handleInvoke(context.Background(), raw)
 	if err == nil {
 		t.Fatal("expected an error for http 403")
 	}
@@ -152,31 +176,19 @@ func TestErrorStatusSurfacesBoundedSnippet(t *testing.T) {
 
 func TestOversizedResponseIsTruncated(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(strings.Repeat("x", maxAkunakiBytes+100)))
+		w.Write([]byte(strings.Repeat("x", maxToolRegBytes+100)))
 	}))
 	defer server.Close()
 
-	a := newAkunaki(t, server.URL)
-	out, err := a.handleList(context.Background(), nil)
+	r := newToolReg(t, server.URL+"/v1/tools")
+	out, err := r.handleList(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("handleList: %v", err)
 	}
-	if len(out) > maxAkunakiBytes+len("\n[truncated]") {
+	if len(out) > maxToolRegBytes+len("\n[truncated]") {
 		t.Errorf("output not truncated: %d bytes", len(out))
 	}
 	if !strings.HasSuffix(out, "[truncated]") {
 		t.Error("missing truncation marker")
-	}
-}
-
-func TestToolsAreExactlyListAndInvoke(t *testing.T) {
-	a := newAkunaki(t, "https://api.invalid")
-	tools := a.Tools()
-	if len(tools) != 2 {
-		t.Fatalf("expected 2 tools, got %d", len(tools))
-	}
-	names := []string{tools[0].Def.Name, tools[1].Def.Name}
-	if names[0] != "health_tools" || names[1] != "health_tool" {
-		t.Errorf("names = %v", names)
 	}
 }

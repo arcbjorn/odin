@@ -72,7 +72,7 @@ type Config struct {
 	Telegram TelegramConfig
 	Web      WebConfig
 	Database DatabaseConfig
-	Akunaki  AkunakiConfig
+	ToolRegs []ToolRegConfig
 }
 
 // DatabaseConfig defines generic write boundaries. Domain behavior belongs in
@@ -83,14 +83,19 @@ type DatabaseConfig struct {
 	MaxAffectedRows int64
 }
 
-// AkunakiConfig configures the akunaki health-backend toolset. Both fields
-// are required when the toolset is enabled: a health agent that cannot reach
-// its backend must fail at build, not at the first morning briefing.
-type AkunakiConfig struct {
-	// BaseURL of the akunaki API, e.g. https://akunaki.example.com.
-	BaseURL string
-	// TokenEnv names the env var holding the read-scoped service token. The
-	// token itself is never in config.
+// ToolRegConfig configures one remote typed tool registry ([[toolreg]]).
+// Every field is required when the toolset is enabled: an agent that cannot
+// reach an authenticated registry must fail at build, not at the first
+// scheduled job.
+type ToolRegConfig struct {
+	// Name labels the registry and prefixes its tool names: a registry named
+	// "health" exposes health_tools and health_tool.
+	Name string
+	// URL is the registry's catalog endpoint itself, e.g.
+	// https://backend.example.com/v1/tools.
+	URL string
+	// TokenEnv names the env var holding the bearer token. The token itself
+	// is never in config.
 	TokenEnv string
 }
 
@@ -182,7 +187,7 @@ var knownToolsets = map[string]bool{
 	"skills":  true, // read markdown skill documents
 	"web":     true, // fetch + search
 	"shell":   true, // ops shell; confine its service user and credentials
-	"akunaki": true, // read-only health backend tools over its /v1/tools registry
+	"toolreg": true, // remote typed tool registries ([[toolreg]] tables)
 }
 
 // Load reads and validates the profile named by name under root.

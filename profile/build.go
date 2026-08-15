@@ -178,16 +178,18 @@ func Build(p *Profile, log *slog.Logger) (*Runtime, error) {
 		}
 	}
 
-	if p.HasToolset("akunaki") {
-		akunaki, err := buildAkunaki(p)
+	if p.HasToolset("toolreg") {
+		regs, err := buildToolRegs(p)
 		if err != nil {
 			rt.Close()
 			return nil, err
 		}
-		for _, t := range akunaki.Tools() {
-			if err := rt.Tools.Register(t); err != nil {
-				rt.Close()
-				return nil, err
+		for _, reg := range regs {
+			for _, t := range reg.Tools() {
+				if err := rt.Tools.Register(t); err != nil {
+					rt.Close()
+					return nil, err
+				}
 			}
 		}
 	}
@@ -263,23 +265,39 @@ func buildWeb(p *Profile, log *slog.Logger) (*tools.Web, error) {
 	return tools.NewWeb(cfg), nil
 }
 
-// buildAkunaki assembles the health-backend toolset. Everything is required
-// and fails at build: the toolset exists to serve scheduled jobs, and a
-// missing token surfacing at 07:00 as a tool error is exactly the failure
-// mode odin exists to avoid.
-func buildAkunaki(p *Profile) (*tools.Akunaki, error) {
-	env := p.Config.Akunaki.TokenEnv
-	if env == "" {
-		return nil, fmt.Errorf("akunaki: token_env is required in [akunaki]")
+// buildToolRegs assembles every configured registry connection. Everything
+// is required and fails at build: the toolset exists to serve scheduled
+// jobs, and a missing token surfacing at 07:00 as a tool error is exactly
+// the failure mode odin exists to avoid.
+func buildToolRegs(p *Profile) ([]*tools.ToolReg, error) {
+	if len(p.Config.ToolRegs) == 0 {
+		return nil, fmt.Errorf("toolreg: enabled but no [[toolreg]] table is configured")
 	}
-	token := os.Getenv(env)
-	if token == "" {
-		return nil, fmt.Errorf("akunaki: env var %s is unset or empty", env)
+	seen := make(map[string]bool, len(p.Config.ToolRegs))
+	regs := make([]*tools.ToolReg, 0, len(p.Config.ToolRegs))
+	for _, rc := range p.Config.ToolRegs {
+		if seen[rc.Name] {
+			return nil, fmt.Errorf("toolreg: duplicate registry name %q", rc.Name)
+		}
+		seen[rc.Name] = true
+		if rc.TokenEnv == "" {
+			return nil, fmt.Errorf("toolreg %q: token_env is required", rc.Name)
+		}
+		token := os.Getenv(rc.TokenEnv)
+		if token == "" {
+			return nil, fmt.Errorf("toolreg %q: env var %s is unset or empty", rc.Name, rc.TokenEnv)
+		}
+		reg, err := tools.NewToolReg(tools.ToolRegConfig{
+			Name:        rc.Name,
+			RegistryURL: rc.URL,
+			Token:       token,
+		})
+		if err != nil {
+			return nil, err
+		}
+		regs = append(regs, reg)
 	}
-	return tools.NewAkunaki(tools.AkunakiConfig{
-		BaseURL: p.Config.Akunaki.BaseURL,
-		Token:   token,
-	})
+	return regs, nil
 }
 
 // System builds the stable system prompt from configured files and the skill
