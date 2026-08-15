@@ -97,9 +97,9 @@ type responsesInput struct {
 }
 
 type responsesTool struct {
-	Type        string         `json:"type"`
-	Name        string         `json:"name"`
-	Description string         `json:"description"`
+	Type        string `json:"type"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
 	// Strict must be present. The codex Responses backend silently ignores a
 	// function tool that omits it — the model then never sees a callable tool
 	// and replies with plain text and no tool call.

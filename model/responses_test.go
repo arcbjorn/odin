@@ -98,7 +98,7 @@ func TestResponsesCodexRequestAndToolCall(t *testing.T) {
 
 	response, err := provider.Complete(context.Background(), Request{
 		System: "stable system", Messages: []Message{{Role: RoleUser, Content: "go"}},
-		Tools: []Tool{{Name: "query", Schema: map[string]any{"type": "object"}}},
+		Tools:  []Tool{{Name: "query", Schema: map[string]any{"type": "object"}}},
 		Effort: "high", MaxTokens: 4096, // must be dropped for codex
 	})
 	if err != nil {

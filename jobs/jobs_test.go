@@ -45,7 +45,7 @@ enabled = false
 func TestLoadJobs(t *testing.T) {
 	dir := writeJobs(t, twoJobs, map[string]string{
 		"daily-report.md": "You are a general assistant. Ground every line in a row you read.",
-		"hourly-check.md":   "Check whether today's review exists.",
+		"hourly-check.md": "Check whether today's review exists.",
 	})
 
 	set, err := Load(dir)
@@ -125,7 +125,7 @@ func TestMissingPromptIsFatal(t *testing.T) {
 func TestEmptyPromptIsFatal(t *testing.T) {
 	dir := writeJobs(t, twoJobs, map[string]string{
 		"daily-report.md": "brief",
-		"hourly-check.md":   "   \n\n",
+		"hourly-check.md": "   \n\n",
 	})
 	if _, err := Load(dir); err == nil {
 		t.Fatal("expected an empty prompt to fail the load")
@@ -180,7 +180,7 @@ func TestMissingManifestReportsNotExist(t *testing.T) {
 func TestFindIsCaseInsensitive(t *testing.T) {
 	dir := writeJobs(t, twoJobs, map[string]string{
 		"daily-report.md": "brief",
-		"hourly-check.md":   "guard",
+		"hourly-check.md": "guard",
 	})
 	set, err := Load(dir)
 	if err != nil {
