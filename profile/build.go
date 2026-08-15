@@ -178,6 +178,20 @@ func Build(p *Profile, log *slog.Logger) (*Runtime, error) {
 		}
 	}
 
+	if p.HasToolset("akunaki") {
+		akunaki, err := buildAkunaki(p)
+		if err != nil {
+			rt.Close()
+			return nil, err
+		}
+		for _, t := range akunaki.Tools() {
+			if err := rt.Tools.Register(t); err != nil {
+				rt.Close()
+				return nil, err
+			}
+		}
+	}
+
 	if p.HasToolset("shell") {
 		// A read-only ops primitive whose safety is the OS user it runs as, not
 		// application logic. See tools.Shell. Enable it only for a profile whose
@@ -247,6 +261,25 @@ func buildWeb(p *Profile, log *slog.Logger) (*tools.Web, error) {
 		cfg.Searcher = searcher
 	}
 	return tools.NewWeb(cfg), nil
+}
+
+// buildAkunaki assembles the health-backend toolset. Everything is required
+// and fails at build: the toolset exists to serve scheduled jobs, and a
+// missing token surfacing at 07:00 as a tool error is exactly the failure
+// mode odin exists to avoid.
+func buildAkunaki(p *Profile) (*tools.Akunaki, error) {
+	env := p.Config.Akunaki.TokenEnv
+	if env == "" {
+		return nil, fmt.Errorf("akunaki: token_env is required in [akunaki]")
+	}
+	token := os.Getenv(env)
+	if token == "" {
+		return nil, fmt.Errorf("akunaki: env var %s is unset or empty", env)
+	}
+	return tools.NewAkunaki(tools.AkunakiConfig{
+		BaseURL: p.Config.Akunaki.BaseURL,
+		Token:   token,
+	})
 }
 
 // System builds the stable system prompt from configured files and the skill

@@ -72,6 +72,7 @@ type Config struct {
 	Telegram TelegramConfig
 	Web      WebConfig
 	Database DatabaseConfig
+	Akunaki  AkunakiConfig
 }
 
 // DatabaseConfig defines generic write boundaries. Domain behavior belongs in
@@ -80,6 +81,17 @@ type DatabaseConfig struct {
 	// MaxAffectedRows rolls a write back when it would change more rows than
 	// this. Zero disables the limit.
 	MaxAffectedRows int64
+}
+
+// AkunakiConfig configures the akunaki health-backend toolset. Both fields
+// are required when the toolset is enabled: a health agent that cannot reach
+// its backend must fail at build, not at the first morning briefing.
+type AkunakiConfig struct {
+	// BaseURL of the akunaki API, e.g. https://akunaki.example.com.
+	BaseURL string
+	// TokenEnv names the env var holding the read-scoped service token. The
+	// token itself is never in config.
+	TokenEnv string
 }
 
 // WebConfig configures the web toolset. All fields are optional: the defaults
@@ -165,11 +177,12 @@ type TelegramConfig struct {
 // knownToolsets is the closed set of toolset names. A typo in config.toml
 // must fail at load, not silently omit a capability at 07:00.
 var knownToolsets = map[string]bool{
-	"db":     true, // sqlite query + exec against db.sqlite
-	"file":   true, // scoped read/write/list under notes/
-	"skills": true, // read markdown skill documents
-	"web":    true, // fetch + search
-	"shell":  true, // ops shell; confine its service user and credentials
+	"db":      true, // sqlite query + exec against db.sqlite
+	"file":    true, // scoped read/write/list under notes/
+	"skills":  true, // read markdown skill documents
+	"web":     true, // fetch + search
+	"shell":   true, // ops shell; confine its service user and credentials
+	"akunaki": true, // read-only health backend tools over its /v1/tools registry
 }
 
 // Load reads and validates the profile named by name under root.

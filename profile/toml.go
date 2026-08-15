@@ -38,7 +38,7 @@ func parseConfig(src string) (Config, error) {
 		if strings.HasPrefix(line, "[") {
 			section = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(line, "["), "]"))
 			switch section {
-			case "telegram", "agent", "web", "database":
+			case "telegram", "agent", "web", "database", "akunaki":
 			default:
 				return cfg, fmt.Errorf("line %d: unknown table [%s]", lineNo, section)
 			}
@@ -143,6 +143,24 @@ func assign(cfg *Config, section, key, value string, lineNo int) error {
 			cfg.Database.MaxAffectedRows = n
 		default:
 			return fmt.Errorf("line %d: unknown key %q in [database]", lineNo, key)
+		}
+
+	case "akunaki":
+		switch key {
+		case "base_url":
+			s, err := parseString(value)
+			if err != nil {
+				return fmt.Errorf("line %d: base_url: %w", lineNo, err)
+			}
+			cfg.Akunaki.BaseURL = s
+		case "token_env":
+			s, err := parseString(value)
+			if err != nil {
+				return fmt.Errorf("line %d: token_env: %w", lineNo, err)
+			}
+			cfg.Akunaki.TokenEnv = s
+		default:
+			return fmt.Errorf("line %d: unknown key %q in [akunaki]", lineNo, key)
 		}
 
 	case "telegram":
