@@ -157,3 +157,48 @@ func newRawGateway(t *testing.T, srv *httptest.Server) *Telegram {
 	g.baseURL = srv.URL
 	return g
 }
+
+// A table written directly under a label must be separated from it, or the
+// renderer absorbs the whole table into that paragraph and shows literal
+// pipes. Verified against the live Bot API: without the blank line the
+// response comes back as a single paragraph block.
+func TestRichMarkdownSeparatesTableFromPrecedingProse(t *testing.T) {
+	in := "Factors\n| Factor | Weight |\n|:---|---:|\n| HRV | 0.25 |"
+	got := richMarkdown(in)
+	if !strings.Contains(got, "Factors\n\n|") {
+		t.Fatalf("table not separated from its label:\n%q", got)
+	}
+	if strings.Contains(got, "Factors  \n|") {
+		t.Fatalf("hard break still glues the table into the paragraph:\n%q", got)
+	}
+}
+
+// Prose resuming after a table must not be swallowed into the table block.
+func TestRichMarkdownSeparatesProseFollowingTable(t *testing.T) {
+	in := "| Factor | Weight |\n|:---|---:|\n| HRV | 0.25 |\nWorkouts: none"
+	got := richMarkdown(in)
+	if !strings.Contains(got, "|\n\nWorkouts: none") {
+		t.Fatalf("prose after the table not separated:\n%q", got)
+	}
+}
+
+// An existing blank line must not become two.
+func TestRichMarkdownDoesNotDoubleExistingBlankLines(t *testing.T) {
+	in := "Factors\n\n| Factor | Weight |\n|:---|---:|\n| HRV | 0.25 |\n\nDone"
+	got := richMarkdown(in)
+	if strings.Contains(got, "\n\n\n") {
+		t.Fatalf("blank lines multiplied:\n%q", got)
+	}
+}
+
+// A fenced code block is not a table and must keep its surrounding layout.
+func TestRichMarkdownLeavesCodeFencesAlone(t *testing.T) {
+	in := "Look:\n```\nx := 1\n```\ndone"
+	got := richMarkdown(in)
+	if !strings.Contains(got, "```\nx := 1\n```") {
+		t.Fatalf("code fence altered:\n%q", got)
+	}
+	if strings.Contains(got, "Look:\n\n```") {
+		t.Fatalf("code fence wrongly treated as a table:\n%q", got)
+	}
+}

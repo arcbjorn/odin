@@ -8,7 +8,7 @@ import (
 // Telegram Bot API 10.1 sendRichMessage renders raw Markdown natively — bold,
 // italics, lists, code, and tables (which MarkdownV2 cannot express at all).
 // So the gateway sends the model's Markdown as-is; the only preprocessing is
-// two fixes for how the native renderer treats plain Markdown:
+// three fixes for how the native renderer treats plain Markdown:
 //
 //  1. A single newline is a soft break, so consecutive prose lines collapse
 //     into one paragraph. Turn single newlines into hard breaks, leaving
@@ -16,6 +16,11 @@ import (
 //  2. A bare "---" table column renders its header centered but its cells
 //     left. Make every delimiter cell's alignment explicit so header and body
 //     agree.
+//  3. A table must START a block. GFM tables cannot interrupt a paragraph, so
+//     a table written directly under a label line is absorbed into it and
+//     rendered as one line of literal pipes — verified against the live API,
+//     which returns the whole table as a single paragraph. Surround every
+//     table with blank lines.
 
 // richProtectedRegion matches a fenced code block or a GFM table: regions whose
 // internal newlines are structural and must not receive hard breaks.
@@ -35,13 +40,61 @@ func richMarkdown(text string) string {
 	}
 	var b strings.Builder
 	last := 0
+	afterTable := false
+	// prose is emitted with the blank lines a neighbouring table requires.
+	prose := func(s string, beforeTable bool) {
+		if afterTable {
+			s = withLeadingBlankLine(s)
+		}
+		if beforeTable {
+			s = withTrailingBlankLine(s)
+		}
+		b.WriteString(s)
+	}
 	for _, loc := range richProtectedRegion.FindAllStringIndex(text, -1) {
-		b.WriteString(hardBreaks(text[last:loc[0]]))          // prose before the region
-		b.WriteString(explicitAlignment(text[loc[0]:loc[1]])) // the region itself
+		region := text[loc[0]:loc[1]]
+		isTable := isTableRegion(region)
+		prose(hardBreaks(text[last:loc[0]]), isTable)
+		b.WriteString(explicitAlignment(region))
+		afterTable = isTable
 		last = loc[1]
 	}
-	b.WriteString(hardBreaks(text[last:]))
+	prose(hardBreaks(text[last:]), false)
 	return b.String()
+}
+
+// isTableRegion distinguishes the two kinds of protected region. Only a fenced
+// code block starts with a fence; anything else the pattern matched is a table.
+func isTableRegion(region string) bool {
+	return !strings.HasPrefix(strings.TrimLeft(region, " \t\n"), "```")
+}
+
+// withTrailingBlankLine ensures prose ending immediately before a table is
+// separated from it by a blank line.
+//
+// This is the difference between a table and a wall of pipes. A GFM table
+// cannot interrupt a paragraph: a label written directly above one ("Factors"
+// then the header row) makes the entire table a continuation of that
+// paragraph, and the renderer emits it as a single line of literal pipes.
+// hardBreaks alone cannot save it — a hard break is still inside the paragraph.
+func withTrailingBlankLine(s string) string {
+	trimmed := strings.TrimRight(s, " \t\n")
+	if trimmed == "" {
+		// Nothing but whitespace before the table (it opens the message, or
+		// already sits after a blank line): leave it as it is.
+		return s
+	}
+	return trimmed + "\n\n"
+}
+
+// withLeadingBlankLine ensures prose resuming after a table is not swallowed
+// into the table block, which is the same failure in the other direction.
+func withLeadingBlankLine(s string) string {
+	trimmed := strings.TrimLeft(s, " \t\n")
+	if trimmed == "" {
+		return s
+	}
+	return "\n\n" + trimmed
 }
 
 // hardBreaks turns a single newline between two non-blank lines into a Markdown
